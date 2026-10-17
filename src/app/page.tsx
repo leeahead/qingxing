@@ -94,7 +94,7 @@ export default function Home() {
   }, []);
   useEffect(() => {
     if ('serviceWorker' in navigator) {
-      const url = new URL('sw.js?v=321451b', document.baseURI);
+      const url = new URL('sw.js?v=64be1cd', document.baseURI);
       navigator.serviceWorker.register(url, { scope: new URL('./', document.baseURI).pathname, updateViaCache: 'none' }).then(registration => registration.update()).catch(() => undefined);
       caches?.keys().then(keys => Promise.all(keys.filter(key => key !== 'qingxing-shell-v3').map(key => caches.delete(key)))).catch(() => undefined);
     }

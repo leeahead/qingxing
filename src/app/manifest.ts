@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: '清醒｜个人记忆',
     short_name: '清醒',
     description: '把你曾经说过的东西，准确地拼回来。',
-    start_url: './',
+    start_url: './latest/',
     display: 'standalone',
     orientation: 'portrait',
     background_color: '#111714',

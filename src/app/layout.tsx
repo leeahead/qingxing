@@ -4,7 +4,7 @@ export const metadata = {
   title: '清醒 | 个人记忆',
   description: '人们忘掉的不是事实，而是当初的清醒。',
   applicationName: '清醒',
-  manifest: './manifest.webmanifest?v=321451b',
+  manifest: './manifest.webmanifest?v=64be1cd',
   appleWebApp: { capable: true, title: '清醒', statusBarStyle: 'black-translucent' },
   formatDetection: { telephone: false },
 };
