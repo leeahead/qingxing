@@ -92,7 +92,13 @@ export default function Home() {
     } catch { setNotice('本地数据无法读取；仍可继续记录。'); }
     setReady(true);
   }, []);
-  useEffect(() => { if ('serviceWorker' in navigator) { const url = new URL('sw.js', document.baseURI); navigator.serviceWorker.register(url, { scope: new URL('./', document.baseURI).pathname }).catch(() => undefined); } }, []);
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      const url = new URL('sw.js?v=321451b', document.baseURI);
+      navigator.serviceWorker.register(url, { scope: new URL('./', document.baseURI).pathname, updateViaCache: 'none' }).then(registration => registration.update()).catch(() => undefined);
+      caches?.keys().then(keys => Promise.all(keys.filter(key => key !== 'qingxing-shell-v3').map(key => caches.delete(key)))).catch(() => undefined);
+    }
+  }, []);
   useEffect(() => { if (ready) localStorage.setItem(ENTRIES_KEY, JSON.stringify(entries)); }, [entries, ready]);
   useEffect(() => { if (ready) localStorage.setItem(TASKS_KEY, JSON.stringify(tasks)); }, [tasks, ready]);
   useEffect(() => { if (ready) localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }, [settings, ready]);

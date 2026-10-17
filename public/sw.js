@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qingxing-shell-v3';
+const CACHE_NAME = 'qingxing-shell-v4';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('message', event => { if (event.data === '清除旧缓存') event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))); });
