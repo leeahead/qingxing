@@ -1,0 +1,61 @@
+name: 发布清醒
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 计算站点路径
+        id: paths
+        run: |
+          if [[ "${{ github.event.repository.name }}" == *.github.io ]]; then
+            echo "base=" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=/${{ github.event.repository.name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建静态页面
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ steps.paths.outputs.base }}
+        run: npm run build
+
+      - name: 上传页面
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署页面
+        id: deployment
+        uses: actions/deploy-pages@v4
