@@ -130,9 +130,40 @@ export default function Home() {
     } finally { setBusy(false); }
   }
 
-  function exportData() {
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), entries, tasks }, null, 2)], { type: 'application/json' });
-    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `qingxing-export-${today()}.json`; link.click(); URL.revokeObjectURL(link.href);
+  async function exportData() {
+    const json = JSON.stringify({ exportedAt: new Date().toISOString(), entries, tasks }, null, 2);
+    const filename = `qingxing-export-${today()}.json`;
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+
+    // WebView 通常拦截 Blob 下载，优先交给系统分享面板保存到文件。
+    try {
+      const file = new File([blob], filename, { type: 'application/json' });
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({ title: '清醒记录', text: '清醒个人记忆记录', files: [file] });
+        setNotice('记录文件已交给系统处理。');
+        return;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+    }
+
+    // 桌面浏览器和允许下载的 WebView 继续使用文件下载。
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+
+    // 如果套壳 App 仍拦截下载，至少让用户能复制完整 JSON 到文件应用。
+    try {
+      await navigator.clipboard.writeText(json);
+      setNotice('下载已发起；如果 App 没有保存文件，记录内容已复制，可粘贴到文本文件中保存。');
+    } catch {
+      setNotice('下载已发起。如果 App 没有保存文件，请在浏览器中打开网页再导出。');
+    }
   }
 
   function feedback(entry: Entry, value: string) {
