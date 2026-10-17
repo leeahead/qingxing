@@ -15,6 +15,7 @@ const ENTRIES_KEY = 'qingxing.entries.v1';
 const TASKS_KEY = 'qingxing.tasks.v1';
 const SETTINGS_KEY = 'qingxing.settings.v1';
 const THEME_KEY = 'qingxing.theme.v1';
+const MEMORY_FEEDBACK_KEY = 'qingxing.memory-feedback.v1';
 const today = () => new Date().toLocaleDateString('sv-SE');
 const localDay = (iso: string) => new Date(iso).toLocaleDateString('sv-SE');
 const makeId = () => crypto.randomUUID();
@@ -78,6 +79,7 @@ export default function Home() {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge');
   const [taskDraft, setTaskDraft] = useState<Entry | null>(null);
+  const [memoryFeedback, setMemoryFeedback] = useState<Record<string, string>>({});
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -86,6 +88,7 @@ export default function Home() {
       setTasks(JSON.parse(localStorage.getItem(TASKS_KEY) || '[]'));
       setSettings({ baseUrl: '', apiKey: '', model: '', ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') });
       setTheme(localStorage.getItem(THEME_KEY) === 'mono' ? 'mono' : 'dark');
+      setMemoryFeedback(JSON.parse(localStorage.getItem(MEMORY_FEEDBACK_KEY) || '{}'));
     } catch { setNotice('本地数据无法读取；仍可继续记录。'); }
     setReady(true);
   }, []);
@@ -94,6 +97,7 @@ export default function Home() {
   useEffect(() => { if (ready) localStorage.setItem(TASKS_KEY, JSON.stringify(tasks)); }, [tasks, ready]);
   useEffect(() => { if (ready) localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }, [settings, ready]);
   useEffect(() => { if (ready) localStorage.setItem(THEME_KEY, theme); }, [theme, ready]);
+  useEffect(() => { if (ready) localStorage.setItem(MEMORY_FEEDBACK_KEY, JSON.stringify(memoryFeedback)); }, [memoryFeedback, ready]);
 
   const dates = useMemo(() => [...new Set(entries.map(entry => localDay(entry.createdAt)))].sort().reverse(), [entries]);
   const dayEntries = useMemo(() => entries.filter(entry => localDay(entry.createdAt) === selectedDate).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [entries, selectedDate]);
@@ -101,6 +105,16 @@ export default function Home() {
   const todayLabel = formatDateLong(selectedDate);
   const filteredEntries = useMemo(() => { const text = query.trim().toLowerCase(); if (!text) return [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)); return entries.filter(entry => entry.content.toLowerCase().includes(text)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }, [entries, query]);
   const repeatedTerms = useMemo(() => { const counts = new Map<string, number>(); entries.filter(entry => localDay(entry.createdAt) === today()).forEach(entry => termsFor(entry.content).forEach(term => counts.set(term, (counts.get(term) || 0) + 1))); return [...counts.entries()].filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1]).slice(0, 3); }, [entries]);
+  const todayConnections = useMemo(() => {
+    const todayItems = entries.filter(entry => localDay(entry.createdAt) === today());
+    const todayTerms = new Set(todayItems.flatMap(entry => termsFor(entry.content)));
+    return entries.filter(entry => localDay(entry.createdAt) !== today() && termsFor(entry.content).some(term => todayTerms.has(term))).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 4);
+  }, [entries]);
+  const recurringTopics = useMemo(() => {
+    const datesByTerm = new Map<string, Set<string>>();
+    entries.forEach(entry => termsFor(entry.content).forEach(term => { const datesForTerm = datesByTerm.get(term) || new Set<string>(); datesForTerm.add(localDay(entry.createdAt)); datesByTerm.set(term, datesForTerm); }));
+    return [...datesByTerm.entries()].filter(([, datesForTerm]) => datesForTerm.size >= 2).sort((a, b) => b[1].size - a[1].size).slice(0, 8);
+  }, [entries]);
 
   function saveEntry() {
     const content = draft.trim(); if (!content) return;
@@ -173,7 +187,7 @@ export default function Home() {
     <aside className="sidebar">
       <button className="brand" onClick={() => nav('home')} aria-label="回到今天"><span className="brand-mark">清</span><span>清醒<small>个人记忆</small></span></button>
       <div className="nav-label">记忆</div>
-      <nav className="nav-list"><button className={view === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => nav('home')}><Icon name="home"/>今天</button><button className={view === 'records' ? 'nav-item active' : 'nav-item'} onClick={() => nav('records')}><Icon name="records"/>全部记录<span className="nav-count">{entries.length}</span></button><button className={view === 'chat' ? 'nav-item active' : 'nav-item'} onClick={() => nav('chat')}><Icon name="chat"/>问问记录</button><button className={view === 'tasks' ? 'nav-item active' : 'nav-item'} onClick={() => nav('tasks')}><Icon name="check"/>待处理事项<span className="nav-count">{activeTasks.length}</span></button></nav>
+      <nav className="nav-list"><button className={view === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => nav('home')}><Icon name="home"/>今天</button><button className={view === 'records' ? 'nav-item active' : 'nav-item'} onClick={() => nav('records')}><Icon name="records"/>记忆<span className="nav-count">{entries.length}</span></button><button className={view === 'chat' ? 'nav-item active' : 'nav-item'} onClick={() => nav('chat')}><Icon name="chat"/>问问记录</button><button className={view === 'tasks' ? 'nav-item active' : 'nav-item'} onClick={() => nav('tasks')}><Icon name="check"/>待处理事项<span className="nav-count">{activeTasks.length}</span></button></nav>
       <div className="date-section"><div className="nav-label">最近记录</div>{dates.slice(0, 8).map(date => <button key={date} className={selectedDate === date && view === 'home' ? 'date-item selected' : 'date-item'} onClick={() => { setSelectedDate(date); nav('home'); }}>{formatDate(date)}<span>{entries.filter(entry => localDay(entry.createdAt) === date).length}</span></button>)}</div>
       <div className="sidebar-bottom"><p>人们忘掉的不是事实，<br/>而是当初的清醒。</p><button className="nav-item" onClick={() => setShowSettings(true)}><Icon name="settings"/>模型与数据</button></div>
     </aside>
@@ -188,7 +202,7 @@ export default function Home() {
         <section className="entries-section"><div className="section-heading"><div><div className="eyebrow">原始证据</div><h2>{selectedDate === today() ? '今天的记录' : '这一天的记录'}</h2></div><span className="quiet-meta">按时间排列</span></div>{dayEntries.length === 0 ? <div className="empty-records">记录会按时间留在这里。<br/>这不是完整的生活，只是你当时选择留下的部分。</div> : <EntryList entries={dayEntries} onTask={entry => setTaskDraft(entry)} onEdit={entry => { setDraft(entry.content); setEditing(entry.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }} onDelete={entry => setEntries(current => current.filter(item => item.id !== entry.id))} onFeedback={feedback}/>}</section>
       </div>}
 
-      {view === 'records' && <div className="content-column"><div className="page-heading"><div><div className="eyebrow">原始证据库</div><h1>全部记录</h1><p className="heading-sub">记录是你当时留下的描述，不等于未被记录的全部现实。</p></div><button className="outline-button" onClick={() => void exportData()}><Icon name="download" size={17}/><span>导出</span></button></div><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索原始记录……"/><span>{filteredEntries.length} 条</span></div><div className="record-library">{filteredEntries.length === 0 ? <div className="empty-records">没有找到匹配记录。</div> : <EntryList entries={filteredEntries} onTask={entry => setTaskDraft(entry)} onEdit={entry => { setSelectedDate(localDay(entry.createdAt)); nav('home'); setDraft(entry.content); setEditing(entry.id); }} onDelete={entry => setEntries(current => current.filter(item => item.id !== entry.id))} onFeedback={feedback}/>}</div></div>}
+      {view === 'records' && <div className="content-column memory-page"><div className="page-heading"><div><div className="eyebrow">长期回看</div><h1>记忆</h1><p className="heading-sub">不是把过去堆在一起，而是让你重新看见当时的清醒。</p></div><button className="outline-button" onClick={() => void exportData()}><Icon name="download" size={17}/><span>导出</span></button></div><div className="memory-layout"><aside className="memory-dates"><div className="memory-side-title">记录时间轴</div>{dates.length === 0 ? <p>还没有记录</p> : dates.map(date => <button key={date} className={selectedDate === date ? 'memory-date selected' : 'memory-date'} onClick={() => setSelectedDate(date)}><span>{formatDate(date)}</span><small>{entries.filter(entry => localDay(entry.createdAt) === date).length} 条</small></button>)}</aside><div className="memory-main"><div className="memory-day-heading"><div><div className="eyebrow">{selectedDate === today() ? '今天' : '某一天'}</div><h2>{formatDateLong(selectedDate)}</h2></div><span>{entries.filter(entry => localDay(entry.createdAt) === selectedDate).length} 条原始记录</span></div><div className="memory-day-records">{entries.filter(entry => localDay(entry.createdAt) === selectedDate).length === 0 ? <div className="empty-records">这一天还没有留下记录。</div> : <EntryList entries={entries.filter(entry => localDay(entry.createdAt) === selectedDate).sort((a, b) => a.createdAt.localeCompare(b.createdAt))} onTask={entry => setTaskDraft(entry)} onEdit={entry => { setSelectedDate(localDay(entry.createdAt)); nav('home'); setDraft(entry.content); setEditing(entry.id); }} onDelete={entry => setEntries(current => current.filter(item => item.id !== entry.id))} onFeedback={feedback}/>}</div></div></div><section className="memory-connections"><div className="section-heading"><div><div className="eyebrow">把过去递回来</div><h2>可能相关的记录</h2></div><span className="quiet-meta">基于词语和日期的初步连接</span></div>{todayConnections.length === 0 ? <p className="empty-records">今天暂时没有找到足够可靠的历史连接。</p> : <div className="connection-list">{todayConnections.map(entry => { const key = `${today()}-${entry.id}`; return <article className="connection-row" key={entry.id}><div className="connection-date">{formatDate(localDay(entry.createdAt))}<small>{formatTime(entry.createdAt)}</small></div><div className="connection-copy"><p>{entry.content}</p><span>这条记录可能与今天的内容有关，但系统还没有把它当成事实。</span><div className="connection-actions"><button className={memoryFeedback[key] === 'related' ? 'chosen' : ''} onClick={() => setMemoryFeedback(current => ({ ...current, [key]: 'related' }))}>有关</button><button className={memoryFeedback[key] === 'unrelated' ? 'chosen' : ''} onClick={() => setMemoryFeedback(current => ({ ...current, [key]: 'unrelated' }))}>无关</button><button onClick={() => { setSelectedDate(localDay(entry.createdAt)); document.getElementById(`memory-${entry.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>查看原文</button></div></div></article>; })}</div>}</section><section className="memory-patterns"><div className="section-heading"><div><div className="eyebrow">跨日期观察</div><h2>反复出现的主题</h2></div><span className="quiet-meta">只显示跨日期出现的词语</span></div>{recurringTopics.length === 0 ? <p className="empty-records">记录还不足以形成跨日期观察。</p> : <div className="pattern-grid">{recurringTopics.map(([term, termDates]) => <button key={term} onClick={() => { setQuery(term); nav('records'); }}><strong>{term}</strong><span>出现在 {termDates.size} 个记录日</span></button>)}</div>}</section></div>}
 
       {view === 'chat' && <div className="chat-layout"><div className="chat-heading"><div className="eyebrow">从记录里取回来</div><h1>问问你的记录</h1><p>回答只基于你留下的内容。记录没有覆盖到的部分，我不会替你补全。</p></div><div className="chat-messages">{messages.length === 0 && <div className="chat-empty"><div className="chat-mark"><Icon name="chat" size={24}/></div><p>你最近反复在意什么？</p><div className="suggestions">{['我最近都在纠结什么？', '关于工作，我以前怎么说？', '我只想看看你从记录里看到了什么。'].map(text => <button key={text} onClick={() => setChatInput(text)}>{text}<span>↗</span></button>)}</div></div>}{messages.map((message, index) => <div key={index} className={`message ${message.role}`}><div className="message-label">{message.role === 'user' ? '你' : '清醒'}</div><div className="message-content">{message.content}{message.sources?.map(source => <blockquote key={source.id}><span>{new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(source.createdAt))}</span>{source.content}</blockquote>)}</div></div>)}{busy && <div className="thinking">正在查看相关记录……</div>}</div><form className="chat-composer" onSubmit={(event: FormEvent) => { event.preventDefault(); void ask(); }}><textarea value={chatInput} onChange={event => setChatInput(event.target.value)} placeholder="问一个关于你自己记录的问题……" rows={2}/><div><span>{settings.baseUrl && settings.model ? `当前模型：${settings.model}` : '本地关键词检索 · 可在设置中接入模型接口'}</span><button className="primary-button" disabled={!chatInput.trim() || busy}><Icon name="send" size={16}/>提问</button></div></form></div>}
 
