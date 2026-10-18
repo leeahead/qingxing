@@ -18,3 +18,17 @@
 .summary-overview{font-size:15px;line-height:1.95;color:var(--ink);padding:0 0 17px;margin:0 0 2px;border-bottom:1px solid var(--line)}
 .ai-summary .summary-overview + .summary-block{padding-top:14px}
 @media(max-width:760px){.summary-overview{font-size:14px;line-height:1.95;padding-bottom:15px}}
+
+.ai-observe-card{padding:22px;margin-bottom:16px}
+.ai-observe-card .section-heading{margin:0 0 10px}
+.ai-observe-card>p.muted{font-size:12px;line-height:1.85;margin:0 0 14px}
+.ai-observe-card .button-row{margin-top:12px}
+.ai-observe-card .form-error{margin-bottom:0}
+.word-clues{padding:0;margin-top:18px}
+.word-clues>summary{padding:16px 20px;font-size:12px;color:var(--muted);cursor:pointer}
+.word-clues[open]>summary{border-bottom:1px solid var(--line)}
+.word-clues>p.muted{padding:14px 20px 0;font-size:11px;line-height:1.8}
+.word-clues .section-heading{padding:0 20px;margin:18px 0 0}
+.word-clues .observation-card{border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none;margin:0}
+.word-clues .empty-state{padding:24px 20px}
+@media(max-width:760px){.ai-observe-card{padding:19px}.ai-observe-card .section-heading{margin-bottom:9px}.word-clues>summary{padding:14px 16px}.word-clues>p.muted{padding:12px 16px 0}.word-clues .section-heading{padding:0 16px}.word-clues .empty-state{padding:20px 16px}}
