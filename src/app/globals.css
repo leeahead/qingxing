@@ -14,3 +14,7 @@
 .shortcut,.recent-day,.memory-preview,.task-reminder{background:var(--surface);border-color:var(--line);box-shadow:var(--shadow)}
 .shortcut:hover,.recent-day:hover,.memory-preview:hover,.task-reminder:hover{background:var(--surface-raised)}
 @media(max-width:760px){.notice{bottom:calc(101px + env(safe-area-inset-bottom));left:16px;right:16px;transform:none;width:auto;justify-content:space-between;box-shadow:0 8px 24px #0002}.heatmap{grid-template-columns:repeat(14,minmax(0,1fr));grid-template-rows:repeat(7,minmax(0,1fr))}}
+
+.summary-overview{font-size:15px;line-height:1.95;color:var(--ink);padding:0 0 17px;margin:0 0 2px;border-bottom:1px solid var(--line)}
+.ai-summary .summary-overview + .summary-block{padding-top:14px}
+@media(max-width:760px){.summary-overview{font-size:14px;line-height:1.95;padding-bottom:15px}}
