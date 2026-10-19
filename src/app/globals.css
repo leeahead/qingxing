@@ -77,3 +77,5 @@
 .obs-version p{font-size:11px;line-height:1.8;margin-top:4px;color:var(--muted)}
 .correction-reasons{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
 @media(max-width:760px){.obs-detail-head h3{font-size:19px}.filter-chip{padding:6px 10px}}
+.app-shell.keyboard-open .mobile-nav{display:none}
+@media(max-width:760px){.app-shell.keyboard-open .chat-composer{bottom:calc(12px + env(safe-area-inset-bottom))}}
