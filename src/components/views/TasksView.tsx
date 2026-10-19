@@ -1,0 +1,14 @@
+'use client';
+
+import type { ChatScope, DailySummary, DigestWeek, Entry, Judgment, MemoryDigest, Message, Settings, Task, View } from '@/lib/types';
+import { dateLabel, dayOf, shortDate, timeOf } from '@/lib/utils';
+import { Icon } from '@/components/Icon';
+import type { ViewProps } from './viewProps';
+
+
+export function TasksView(props: ViewProps) {
+  const { entries, tasks, judgments, summaries, digests, modelReady, counts, topics, todaysEntries, dayTopics, historicalEcho, activeTasks, observationScope, observationStats, observationFilter, observationReviewFlags, visibleJudgments, chatScope, messages, chatInput, busy, digestBusy, digestProgress, digestError, digestEntryCount, nextDigestBatch, sortedDigests, digestFreshness, redigestPending, removeDigestPending, observationBusy, observationError, uncoveredWeeks, summaryBusy, summaryError, selectedDay, selectedEntries, month, calendar, heatDays, query, searchResults, draft, editing, ready, setView, setSelectedDay, setMonth, setQuery, setDraft, setChatScope, setChatInput, setObservationFilter, setShowSummary, setShowDigests, setRedigestPending, setRemoveDigestPending, setDigestError, setStatus, setNotice, setTyping, navigate, openDay, changeMonth, openActions, saveEntry, openObservation, createJudgment, ask, generateSummary, generateObservations, updateDigests, redigestWeek, removeDigest, summaryFor, composerRef, chatEndRef, header, entryList } = props;
+  return <>
+<div className="content-column">{header('少一点悬而未决', '待处理事项', '只留下你确认过的事。延期或放弃，也是一个决定。')}{!tasks.length && <div className="empty-state card"><Icon name="check" size={32}/><h3>没有需要悬挂的事</h3><p>在记录的“更多”中，确认一件你想处理的事。</p></div>}{(['open', 'deferred', 'done', 'dropped'] as const).map(status => { const group = tasks.filter(item => item.status === status); if (!group.length) return null; return <section key={status} className="task-section"><div className="section-heading"><h2>{({ open: '待处理', deferred: '以后处理', done: '已经完成', dropped: '已经放下' })[status]} <span>{group.length}</span></h2></div>{group.map(task => <article key={task.id} className="task-card card"><button className={`task-check ${status === 'done' ? 'checked' : ''}`} aria-label={`${status === 'done' ? '重新打开' : '完成'}：${task.title}`} onClick={() => setStatus(task.id, status === 'done' ? 'open' : 'done')}>{status === 'done' && <Icon name="check" size={17}/>}</button><div><p>{task.title}</p><button className="text-button" onClick={() => { const source = entries.find(entry => entry.id === task.sourceId); if (source) { setView('memory'); openDay(dayOf(source.createdAt)); } else setNotice('关联原文已删除。'); }}>回到原始记录</button></div><select aria-label={`事项状态：${task.title}`} value={status} onChange={event => setStatus(task.id, event.target.value as Task['status'])}><option value="open">待处理</option><option value="deferred">延期</option><option value="done">完成</option><option value="dropped">放弃</option></select></article>)}</section>; })}</div>
+  </>;
+}
