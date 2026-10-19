@@ -79,3 +79,8 @@
 @media(max-width:760px){.obs-detail-head h3{font-size:19px}.filter-chip{padding:6px 10px}}
 .app-shell.keyboard-open .mobile-nav{display:none}
 @media(max-width:760px){.app-shell.keyboard-open .chat-composer{bottom:calc(12px + env(safe-area-inset-bottom))}}
+/* 不依赖 JS 状态的兜底：输入框有焦点时直接收起底栏 */
+.app-shell:has(.composer textarea:focus) .mobile-nav,
+.app-shell:has(.chat-composer textarea:focus) .mobile-nav,
+.app-shell:has(.search-box input:focus) .mobile-nav{display:none}
+@media(max-width:760px){.app-shell:has(.chat-composer textarea:focus) .chat-composer{bottom:calc(12px + env(safe-area-inset-bottom))}.app-shell.keyboard-open .main-area{padding-bottom:calc(24px + env(safe-area-inset-bottom))}}
