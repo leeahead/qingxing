@@ -91,3 +91,7 @@
 .app-shell:has(.chat-composer textarea:focus) .mobile-nav,
 .app-shell:has(.search-box input:focus) .mobile-nav{display:none}
 @media(max-width:760px){.app-shell:has(.chat-composer textarea:focus) .chat-composer{bottom:calc(12px + env(safe-area-inset-bottom))}.app-shell.keyboard-open .main-area{padding-bottom:calc(24px + env(safe-area-inset-bottom))}}
+/* 键盘诊断：设置里的「键盘与底栏诊断」用，正常使用时不显示 */
+.diag-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px;font-size:11px;color:var(--muted);line-height:1.6}
+.diag-list li{display:flex;gap:10px;align-items:baseline}
+.diag-list span{font-variant-numeric:tabular-nums;color:var(--faint);flex-shrink:0}

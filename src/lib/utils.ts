@@ -1,7 +1,9 @@
 // 纯函数工具：日期、id、本地存储键与界面用到的固定文案。
 // 这些函数不依赖 React，也不读写状态，方便单独复用和测试。
 
-export const VERSION = '4.2 · 判断页补全';
+import type { ObservationType } from './types';
+
+export const VERSION = '4.3 · 底栏修复与拆分';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -36,5 +38,6 @@ export const navItems: { id: 'home' | 'memory' | 'judgments' | 'chat' | 'tasks';
 ];
 
 export const confidenceLabels = { weak: '证据较弱', medium: '证据中等', strong: '证据较强' } as const;
+export const observationTypeLabels: Record<ObservationType, string> = { pattern: '模式', change: '变化', tension: '矛盾', question: '问题', hypothesis: '假设' };
 export const judgmentStatusLabels = { candidate: '待核对', confirmed: '已确认', uncertain: '暂不确定', withdrawn: '已撤回' } as const;
 export const correctionReasons = ['不准确', '只发生过一次', '忽略了另一条记录', '当时情境不同', '已经变化了', '以后不再使用'];

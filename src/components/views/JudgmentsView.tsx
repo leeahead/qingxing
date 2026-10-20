@@ -1,13 +1,11 @@
 'use client';
 
-import type { ChatScope, DailySummary, DigestWeek, Entry, Judgment, MemoryDigest, Message, ObservationType, Settings, Task, View } from '@/lib/types';
+import type { ChatScope, DailySummary, DigestWeek, Entry, Judgment, MemoryDigest, Message, Settings, Task, View } from '@/lib/types';
 import { dateLabel, dayOf, shortDate, timeOf } from '@/lib/utils';
 import { Icon } from '@/components/Icon';
 import type { ViewProps } from './viewProps';
 import { termsFor } from '@/lib/topics';
-import { confidenceLabels } from '@/lib/utils';
-
-const observationTypeLabels: Record<ObservationType, string> = { pattern: '模式', change: '变化', tension: '矛盾', question: '问题', hypothesis: '假设' };
+import { confidenceLabels, observationTypeLabels } from '@/lib/utils';
 
 export function JudgmentsView(props: ViewProps) {
   const { entries, tasks, judgments, summaries, digests, modelReady, counts, topics, todaysEntries, dayTopics, historicalEcho, activeTasks, observationScope, observationStats, observationFilter, observationReviewFlags, visibleJudgments, chatScope, messages, chatInput, busy, digestBusy, digestProgress, digestError, digestEntryCount, nextDigestBatch, sortedDigests, digestFreshness, redigestPending, removeDigestPending, observationBusy, observationError, uncoveredWeeks, summaryBusy, summaryError, selectedDay, selectedEntries, month, calendar, heatDays, query, searchResults, draft, editing, ready, setView, setSelectedDay, setMonth, setQuery, setDraft, setChatScope, setChatInput, setObservationFilter, setShowSummary, setShowDigests, setRedigestPending, setRemoveDigestPending, setDigestError, setStatus, setTyping, navigate, openDay, changeMonth, openActions, saveEntry, openObservation, createJudgment, ask, generateSummary, generateObservations, updateDigests, redigestWeek, removeDigest, summaryFor, composerRef, chatEndRef, header, entryList } = props;
