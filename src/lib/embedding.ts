@@ -14,7 +14,11 @@ export type EmbeddingProbe = {
   model?: string;
 };
 
-export const embeddingsUrl = (settings: Settings) => `${settings.baseUrl.trim().replace(/\/$/, '')}/embeddings`;
+export const embeddingsUrl = (settings: Settings) => {
+  const base = settings.baseUrl.trim().replace(/\/$/, '');
+  // 用户按常见习惯把完整路径填进来时不要再拼一次，否则会请求到 /embeddings/embeddings 而必然 404。
+  return /\/embeddings$/i.test(base) ? base : `${base}/embeddings`;
+};
 
 /** 向量模型名：没单独填就用对话模型名。 */
 export const embeddingModel = (settings: Settings) => (settings.embedModel || settings.model || '').trim();

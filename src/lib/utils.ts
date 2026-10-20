@@ -3,7 +3,7 @@
 
 import type { ObservationType } from './types';
 
-export const VERSION = '4.5 · 关于你与自动备份';
+export const VERSION = '4.5.1 · 备份可信与向量可用';
 
 export const keys = {
   entries: 'qingxing.entries.v1',

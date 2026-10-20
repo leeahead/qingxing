@@ -73,6 +73,13 @@ function openDatabase(): Promise<IDBDatabase | null> {
     if (typeof indexedDB === 'undefined') { resolve(null); return; }
     let request: IDBOpenDBRequest;
     try { request = indexedDB.open(DB_NAME, DB_VERSION); } catch (error) { noteError(error); resolve(null); return; }
+    // 打不开时不能把 null 永久缓存：升级被别的标签页挡住（onblocked）只说明这一刻不行，
+    // 下次调用应该再试，否则整个会话都写不进 IndexedDB，用户会一直看到“写入失败”。
+    const giveUp = (error?: unknown) => {
+      if (error) noteError(error);
+      dbPromise = null;
+      resolve(null);
+    };
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_STATE)) db.createObjectStore(STORE_STATE, { keyPath: 'key' });
@@ -80,9 +87,14 @@ function openDatabase(): Promise<IDBDatabase | null> {
       if (!db.objectStoreNames.contains(STORE_SNAPSHOTS)) db.createObjectStore(STORE_SNAPSHOTS, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORE_VECTORS)) db.createObjectStore(STORE_VECTORS, { keyPath: 'id' });
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => { noteError(request.error); resolve(null); };
-    request.onblocked = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      // 别的标签页要升级版本时让出连接，避免互相阻塞。
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
+    request.onerror = () => giveUp(request.error);
+    request.onblocked = () => giveUp();
   });
   return dbPromise;
 }
@@ -283,6 +295,17 @@ export async function writeVectors(rows: VectorRow[]): Promise<number> {
   }
 }
 
+/** 清空向量缓存（导入时整体替换了记录，旧向量全部作废）。 */
+export async function clearVectors(): Promise<void> {
+  const db = await openDatabase();
+  if (!db) return;
+  try {
+    const tx = db.transaction(STORE_VECTORS, 'readwrite');
+    tx.objectStore(STORE_VECTORS).clear();
+    await new Promise<void>(resolve => { tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); tx.onabort = () => resolve(); });
+  } catch (error) { noteError(error); }
+}
+
 /** 丢掉某个记录的向量（记录被删或被改时调用）。 */
 export async function deleteVectors(ids: string[]): Promise<void> {
   const db = await openDatabase();
@@ -358,16 +381,18 @@ export async function deleteSnapshot(id: string): Promise<void> {
 }
 
 /**
- * 清空本机数据（记录、事项、观察、总结、长期记忆、设置、主题与操作日志）。
+ * 清空本机数据（记录、事项、观察、总结、长期记忆、设置、主题、向量缓存与操作日志）。
  * 快照保留：清空前会自动留一份，那是最后的退路；要连它一起清掉，在设置里逐份删除即可。
  */
 export async function clearStorage(): Promise<void> {
   const db = await openDatabase();
   if (db) {
     try {
-      const tx = db.transaction([STORE_STATE, STORE_JOURNAL], 'readwrite');
+      // 向量缓存也要清：留着会让设置页显示“已有 N / 0 条记录带向量”。
+      const tx = db.transaction([STORE_STATE, STORE_JOURNAL, STORE_VECTORS], 'readwrite');
       tx.objectStore(STORE_STATE).clear();
       tx.objectStore(STORE_JOURNAL).clear();
+      tx.objectStore(STORE_VECTORS).clear();
       await new Promise<void>(resolve => { tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); tx.onabort = () => resolve(); });
     } catch (error) {
       noteError(error);
@@ -377,5 +402,8 @@ export async function clearStorage(): Promise<void> {
     for (const key of Object.values(keys)) localStorage.removeItem(key);
     localStorage.removeItem('qingxing.settings.v1');
     localStorage.removeItem('qingxing.theme.v1');
+    // 备份元信息跟着一起清：目录句柄存在 state 里已经没了，
+    // 留着「当前：某目录」会让“立即备份”看起来能用、实际什么都不做。
+    localStorage.removeItem(BACKUP_META_KEY);
   } catch { /* ignore */ }
 }

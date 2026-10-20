@@ -119,9 +119,11 @@
 .profile-item.pending{opacity:.92}
 .profile-item-meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;font-size:11px}
 .profile-item .button-row{margin-top:8px;gap:8px}
-.profile-add{margin-top:10px}
-.profile-add input{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--surface-raised);padding:11px 13px;font-size:13px;color:var(--ink);outline:none}
+.profile-item input.profile-edit{width:100%;border:1px solid var(--accent);border-radius:13px;background:var(--surface-raised);padding:11px 13px;font-size:13px;line-height:1.7;color:var(--ink);outline:none}
+.profile-add{margin-top:10px;display:flex;gap:8px;align-items:center}
+.profile-add input{flex:1;min-width:0;border:1px solid var(--line);border-radius:13px;background:var(--surface-raised);padding:11px 13px;font-size:13px;color:var(--ink);outline:none}
 .profile-add input:focus{border-color:var(--accent)}
+.profile-add .quiet-button{flex-shrink:0}
 /* 备份提醒 */
 .backup-nudge{display:flex;align-items:center;gap:13px;width:100%;text-align:left;margin-top:16px;padding:15px 18px;border-radius:20px}
 .backup-nudge span{flex:1;min-width:0}
