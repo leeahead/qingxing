@@ -3,7 +3,7 @@
 
 import type { ObservationType } from './types';
 
-export const VERSION = '4.3 · 底栏修复与拆分';
+export const VERSION = '4.4 · 存储层与可恢复';
 
 export const keys = {
   entries: 'qingxing.entries.v1',

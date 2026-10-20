@@ -1,0 +1,300 @@
+// 存储层：IndexedDB 为主，localStorage 为镜像与兼容兜底。
+//
+// 为什么不做全量事件溯源：事件流在这里只做两件事——
+//   1) 一份「只增不改的操作日志」：记下每次增删改、纠正、沉淀，删掉的原文也留一份，可回放、可撤销；
+//   2) 一份「每日快照」：误操作（尤其是清空）能回滚。
+// 界面仍然直接读 Store 形状，不用把每个读取都改写成投影。
+// 收益拿到八成，代价只有十分之一。
+//
+// 全部函数都不抛错：IndexedDB 不可用（隐私模式、旧 WebView、配额被拒）时自动退回 localStorage，
+// 应用照常能用，只是容量回到 5MB。
+
+import type { Entry, Settings, Store, Theme } from './types';
+import { keys, uid } from './utils';
+
+const DB_NAME = 'qingxing';
+const DB_VERSION = 1;
+const STORE_STATE = 'state';
+const STORE_JOURNAL = 'journal';
+const STORE_SNAPSHOTS = 'snapshots';
+const STATE_KEY = 'current';
+
+/** 日志最多留多少条；快照最多留多少份。 */
+const JOURNAL_LIMIT = 500;
+const SNAPSHOT_LIMIT = 14;
+
+export type PersistedState = { store: Store; settings: Settings; theme: Theme; updatedAt: string };
+
+export type JournalKind =
+  | 'entry.created' | 'entry.edited' | 'entry.deleted'
+  | 'judgment.created' | 'judgment.updated'
+  | 'summary.generated' | 'digest.generated'
+  | 'state.restored' | 'state.cleared';
+
+export type JournalEvent = {
+  id: string;
+  at: string;
+  kind: JournalKind;
+  /** 一句话说明，界面上直接显示 */
+  text: string;
+  /** 只有删除记录时才带全文，用于恢复 */
+  entry?: Entry;
+};
+
+export type Snapshot = { id: string; at: string; reason: string; state: PersistedState };
+
+export type StorageStatus = {
+  mode: 'indexeddb' | 'localstorage';
+  entries: number;
+  tasks: number;
+  judgments: number;
+  journal: number;
+  snapshots: number;
+  usage?: number;
+  quota?: number;
+  lastError?: string;
+};
+
+let dbPromise: Promise<IDBDatabase | null> | null = null;
+let lastError = '';
+
+function noteError(error: unknown) {
+  lastError = error instanceof Error ? error.message : String(error);
+}
+
+function openDatabase(): Promise<IDBDatabase | null> {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise(resolve => {
+    if (typeof indexedDB === 'undefined') { resolve(null); return; }
+    let request: IDBOpenDBRequest;
+    try { request = indexedDB.open(DB_NAME, DB_VERSION); } catch (error) { noteError(error); resolve(null); return; }
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_STATE)) db.createObjectStore(STORE_STATE, { keyPath: 'key' });
+      if (!db.objectStoreNames.contains(STORE_JOURNAL)) db.createObjectStore(STORE_JOURNAL, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_SNAPSHOTS)) db.createObjectStore(STORE_SNAPSHOTS, { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => { noteError(request.error); resolve(null); };
+    request.onblocked = () => resolve(null);
+  });
+  return dbPromise;
+}
+
+function requestResult<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function dbGet<T>(db: IDBDatabase, store: string, key: IDBValidKey): Promise<T | undefined> {
+  const tx = db.transaction(store, 'readonly');
+  return requestResult(tx.objectStore(store).get(key) as IDBRequest<T | undefined>);
+}
+
+async function dbGetAll<T>(db: IDBDatabase, store: string): Promise<T[]> {
+  const tx = db.transaction(store, 'readonly');
+  return requestResult(tx.objectStore(store).getAll() as IDBRequest<T[]>);
+}
+
+async function dbPut(db: IDBDatabase, store: string, value: unknown): Promise<void> {
+  const tx = db.transaction(store, 'readwrite');
+  await requestResult(tx.objectStore(store).put(value));
+}
+
+async function dbDelete(db: IDBDatabase, store: string, key: IDBValidKey): Promise<void> {
+  const tx = db.transaction(store, 'readwrite');
+  await requestResult(tx.objectStore(store).delete(key));
+}
+
+/* ------------------------------ 镜像与兼容 ------------------------------ */
+
+/** 从旧的 localStorage 结构读出状态（同时也是 IndexedDB 里没有数据时的回退来源）。 */
+export function readMirrorState(): PersistedState | null {
+  try {
+    const loaded = Object.fromEntries(
+      Object.entries(keys).map(([name, key]) => [name, JSON.parse(localStorage.getItem(key) || (name === 'memoryFeedback' ? '{}' : '[]'))]),
+    ) as Store;
+    if (!Array.isArray(loaded.entries) || !Array.isArray(loaded.tasks) || !Array.isArray(loaded.judgments)) return null;
+    if (!Array.isArray(loaded.summaries)) loaded.summaries = [];
+    if (!Array.isArray(loaded.digests)) loaded.digests = [];
+    const settings = { baseUrl: '', apiKey: '', model: '', ...JSON.parse(localStorage.getItem('qingxing.settings.v1') || '{}') } as Settings;
+    const savedTheme = localStorage.getItem('qingxing.theme.v1');
+    const theme: Theme = savedTheme === 'light' || savedTheme === 'mono' ? 'light' : 'dark';
+    return { store: loaded, settings, theme, updatedAt: new Date().toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+/** 写一份 localStorage 镜像。IndexedDB 不可用时，这就是唯一的数据落点。 */
+export function writeMirrorState(state: PersistedState): boolean {
+  try {
+    for (const [name, key] of Object.entries(keys)) localStorage.setItem(key, JSON.stringify(state.store[name as keyof Store]));
+    localStorage.setItem('qingxing.settings.v1', JSON.stringify(state.settings));
+    localStorage.setItem('qingxing.theme.v1', state.theme);
+    return true;
+  } catch {
+    // 镜像写不进去不算失败：主存是 IndexedDB。
+    return false;
+  }
+}
+
+/* ------------------------------ 主存读写 ------------------------------ */
+
+export async function readState(): Promise<PersistedState | null> {
+  const db = await openDatabase();
+  if (!db) return null;
+  try {
+    const row = await dbGet<{ key: string; state: PersistedState }>(db, STORE_STATE, STATE_KEY);
+    if (!row?.state?.store?.entries) return null;
+    return row.state;
+  } catch (error) {
+    noteError(error);
+    return null;
+  }
+}
+
+export async function writeState(state: PersistedState): Promise<boolean> {
+  const db = await openDatabase();
+  if (!db) return false;
+  try {
+    await dbPut(db, STORE_STATE, { key: STATE_KEY, state: { ...state, updatedAt: new Date().toISOString() } });
+    lastError = '';
+    return true;
+  } catch (error) {
+    noteError(error);
+    return false;
+  }
+}
+
+/* ------------------------------ 操作日志 ------------------------------ */
+
+export async function appendJournal(kind: JournalKind, text: string, entry?: Entry): Promise<void> {
+  const db = await openDatabase();
+  if (!db) return;
+  try {
+    const event: JournalEvent = { id: uid(), at: new Date().toISOString(), kind, text, ...(entry ? { entry } : {}) };
+    await dbPut(db, STORE_JOURNAL, event);
+    const all = await dbGetAll<JournalEvent>(db, STORE_JOURNAL);
+    if (all.length > JOURNAL_LIMIT) {
+      const excess = all.sort((a, b) => a.at.localeCompare(b.at)).slice(0, all.length - JOURNAL_LIMIT);
+      for (const old of excess) await dbDelete(db, STORE_JOURNAL, old.id);
+    }
+  } catch (error) {
+    noteError(error);
+  }
+}
+
+export async function listJournal(limit = 30): Promise<JournalEvent[]> {
+  const db = await openDatabase();
+  if (!db) return [];
+  try {
+    const all = await dbGetAll<JournalEvent>(db, STORE_JOURNAL);
+    return all.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+  } catch (error) {
+    noteError(error);
+    return [];
+  }
+}
+
+/* -------------------------------- 快照 -------------------------------- */
+
+/** 记一份快照。清理掉超出份数上限的旧快照。 */
+export async function createSnapshot(state: PersistedState, reason: string): Promise<Snapshot | null> {
+  const db = await openDatabase();
+  if (!db) return null;
+  try {
+    const snapshot: Snapshot = { id: uid(), at: new Date().toISOString(), reason, state: { ...state, updatedAt: new Date().toISOString() } };
+    await dbPut(db, STORE_SNAPSHOTS, snapshot);
+    const all = await dbGetAll<Snapshot>(db, STORE_SNAPSHOTS);
+    if (all.length > SNAPSHOT_LIMIT) {
+      const excess = all.sort((a, b) => a.at.localeCompare(b.at)).slice(0, all.length - SNAPSHOT_LIMIT);
+      for (const old of excess) await dbDelete(db, STORE_SNAPSHOTS, old.id);
+    }
+    return snapshot;
+  } catch (error) {
+    noteError(error);
+    return null;
+  }
+}
+
+export async function listSnapshots(): Promise<Snapshot[]> {
+  const db = await openDatabase();
+  if (!db) return [];
+  try {
+    const all = await dbGetAll<Snapshot>(db, STORE_SNAPSHOTS);
+    return all.sort((a, b) => b.at.localeCompare(a.at));
+  } catch (error) {
+    noteError(error);
+    return [];
+  }
+}
+
+export async function readSnapshot(id: string): Promise<Snapshot | null> {
+  const db = await openDatabase();
+  if (!db) return null;
+  try {
+    const row = await dbGet<Snapshot>(db, STORE_SNAPSHOTS, id);
+    return row ?? null;
+  } catch (error) {
+    noteError(error);
+    return null;
+  }
+}
+
+/* ------------------------------ 状态与清理 ------------------------------ */
+
+export async function storageStatus(state: PersistedState | null): Promise<StorageStatus> {
+  const db = await openDatabase();
+  const journal = db ? (await listJournal(JOURNAL_LIMIT)).length : 0;
+  const snapshots = db ? (await listSnapshots()).length : 0;
+  let usage: number | undefined;
+  let quota: number | undefined;
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    if (estimate) { usage = estimate.usage; quota = estimate.quota; }
+  } catch { /* 不支持就算了 */ }
+  return {
+    mode: db ? 'indexeddb' : 'localstorage',
+    entries: state?.store.entries.length ?? 0,
+    tasks: state?.store.tasks.length ?? 0,
+    judgments: state?.store.judgments.length ?? 0,
+    journal,
+    snapshots,
+    usage,
+    quota,
+    lastError: lastError || undefined,
+  };
+}
+
+/** 删掉一份快照。 */
+export async function deleteSnapshot(id: string): Promise<void> {
+  const db = await openDatabase();
+  if (!db) return;
+  try { await dbDelete(db, STORE_SNAPSHOTS, id); } catch (error) { noteError(error); }
+}
+
+/**
+ * 清空本机数据（记录、事项、观察、总结、长期记忆、设置、主题与操作日志）。
+ * 快照保留：清空前会自动留一份，那是最后的退路；要连它一起清掉，在设置里逐份删除即可。
+ */
+export async function clearStorage(): Promise<void> {
+  const db = await openDatabase();
+  if (db) {
+    try {
+      const tx = db.transaction([STORE_STATE, STORE_JOURNAL], 'readwrite');
+      tx.objectStore(STORE_STATE).clear();
+      tx.objectStore(STORE_JOURNAL).clear();
+      await new Promise<void>(resolve => { tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); tx.onabort = () => resolve(); });
+    } catch (error) {
+      noteError(error);
+    }
+  }
+  try {
+    for (const key of Object.values(keys)) localStorage.removeItem(key);
+    localStorage.removeItem('qingxing.settings.v1');
+    localStorage.removeItem('qingxing.theme.v1');
+  } catch { /* ignore */ }
+}

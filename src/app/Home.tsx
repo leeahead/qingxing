@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { repeatedTopics, termsFor } from '@/lib/topics';
 import type { ChatScope, DigestWeek, Entry, Judgment, MemoryDigest, Message, Settings, Store, Task, Theme, View } from '@/lib/types';
-import { VERSION, addDays, confidenceLabels, correctionReasons, dateLabel, dayOf, judgmentStatusLabels, keys, navItems, observationTypeLabels, shortDate, timeOf, today, uid, weekStart } from '@/lib/utils';
+import { VERSION, addDays, confidenceLabels, correctionReasons, dateLabel, dayOf, judgmentStatusLabels, navItems, observationTypeLabels, shortDate, timeOf, today, uid, weekStart } from '@/lib/utils';
 import { buildChatRequest, buildDigestRequest, buildObservationRequest, buildRevisionRequest, buildSummaryRequest, callModel, parseDigest, parseObservations, parseRevision, parseSummary } from '@/lib/ai';
 import { backupFileName, buildBackupText, mergeStores, parseBackupText, saveBackupFile } from '@/lib/backup';
+import { appendJournal, clearStorage, createSnapshot, deleteSnapshot, listJournal, listSnapshots, readMirrorState, readSnapshot, readState, storageStatus, writeMirrorState, writeState } from '@/lib/storage';
+import type { JournalEvent, JournalKind, Snapshot, StorageStatus } from '@/lib/storage';
 import { isInputField, watchKeyboard } from '@/lib/keyboard';
 import type { KeyboardDiag } from '@/lib/keyboard';
 import { EntryCard } from '@/components/EntryCard';
@@ -48,6 +50,9 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [typing, setTyping] = useState(false);
   const [keyboardDiag, setKeyboardDiag] = useState<KeyboardDiag[]>([]);
+  const [storageInfo, setStorageInfo] = useState<StorageStatus | null>(null);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [journal, setJournal] = useState<JournalEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [chatScope, setChatScope] = useState<ChatScope>('all');
   const [summaryBusy, setSummaryBusy] = useState(false);
@@ -74,18 +79,47 @@ export default function Home() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const { entries, tasks, judgments, summaries, digests } = data;
 
+  // 读取本机数据：优先 IndexedDB（容量大得多），没有就退回旧的 localStorage 结构并顺手搬过去。
   useEffect(() => {
-    try {
-      const loaded = Object.fromEntries(Object.entries(keys).map(([name, key]) => [name, JSON.parse(localStorage.getItem(key) || (name === 'memoryFeedback' ? '{}' : '[]'))])) as Store;
-      if (!Array.isArray(loaded.entries) || !Array.isArray(loaded.tasks) || !Array.isArray(loaded.judgments)) throw new Error();
-      if (!Array.isArray(loaded.summaries)) loaded.summaries = [];
-      if (!Array.isArray(loaded.digests)) loaded.digests = [];
-      setData(loaded); setSettings({ ...blankSettings, ...JSON.parse(localStorage.getItem('qingxing.settings.v1') || '{}') });
-      const saved = localStorage.getItem('qingxing.theme.v1'); setTheme(saved === 'light' || saved === 'mono' ? 'light' : 'dark');
-      setReady(true);
-    } catch { setNotice('读取本地数据失败。请先导出或检查浏览器存储，避免覆盖原数据。'); }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const stored = await readState();
+        const mirror = readMirrorState();
+        // 主存为准；但如果主存是空的而镜像里有内容（旧设备迁移、或主存曾被清空），
+        // 以镜像为准，别让已经写下的记忆凭空消失。
+        const weight = (state: typeof stored) => state ? state.store.entries.length + state.store.tasks.length + state.store.judgments.length + state.store.summaries.length + state.store.digests.length : 0;
+        const source = weight(stored) > 0 || weight(mirror) === 0 ? stored : mirror;
+        if (cancelled) return;
+        if (!source) { setReady(true); void refreshStorage(); return; }
+        setData(source.store);
+        setSettings({ ...blankSettings, ...source.settings });
+        setTheme(source.theme);
+        setReady(true);
+        if (source !== stored) await writeState(source);   // 旧数据第一次进来：搬进主存储
+        // 每天留一份快照：误操作（尤其是清空）能回滚。
+        const existing = await listSnapshots();
+        if (!existing.length || dayOf(existing[0].at) !== today()) await createSnapshot(source, '每日快照');
+        void refreshStorage();
+      } catch {
+        if (!cancelled) { setNotice('读取本地数据失败。请先导出或检查浏览器存储，避免覆盖原数据。'); setReady(true); }
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
-  useEffect(() => { if (!ready) return; try { for (const [name, key] of Object.entries(keys)) localStorage.setItem(key, JSON.stringify(data[name as keyof Store])); localStorage.setItem('qingxing.settings.v1', JSON.stringify(settings)); localStorage.setItem('qingxing.theme.v1', theme); } catch { setNotice('设备存储空间不足，最近修改尚未持久保存，请导出备份。'); } }, [data, ready, settings, theme]);
+  // 落盘：主存写 IndexedDB，同时留一份 localStorage 镜像（IndexedDB 不可用时镜像就是唯一落点）。
+  useEffect(() => {
+    if (!ready) return;
+    const state = { store: data, settings, theme, updatedAt: new Date().toISOString() };
+    const timer = setTimeout(() => {
+      void (async () => {
+        const saved = await writeState(state);
+        writeMirrorState(state);
+        if (!saved) setNotice('本机存储写入失败，最近修改可能没有保存，请导出备份。');
+      })();
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [data, ready, settings, theme]);
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   // 旧版本注册过的 Service Worker 会把页面锁在旧缓存里，导致“发布后手机看不到新版”。
   // 这里只做一次性清理：确实存在旧注册时才注销并清缓存，然后刷新一次；本地数据不受影响。
@@ -118,6 +152,9 @@ export default function Home() {
     onDiag: entry => setKeyboardDiag(current => [...current, entry].slice(-DIAG_LIMIT)),
   }), []);
 
+  // 打开「偏好与数据」时刷新一次存储状态、快照与操作记录。
+  useEffect(() => { if (showSettings) void refreshStorage(); }, [showSettings]);
+
   const counts = useMemo(() => { const map = new Map<string, number>(); for (const entry of entries) { const day = dayOf(entry.createdAt); map.set(day, (map.get(day) || 0) + 1); } return map; }, [entries]);
   const todaysEntries = entries.filter(entry => dayOf(entry.createdAt) === today()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const activeTasks = tasks.filter(task => task.status === 'open' || task.status === 'deferred');
@@ -145,10 +182,57 @@ export default function Home() {
   const calendar = useMemo(() => { const [year, number] = month.split('-').map(Number); const first = (new Date(year, number - 1, 1).getDay() + 6) % 7; return [...Array(first).fill(null), ...Array.from({ length: new Date(year, number, 0).getDate() }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`)] as (string | null)[]; }, [month]);
   const heatDays = useMemo(() => { const start = new Date(`${today()}T12:00:00`); start.setDate(start.getDate() - 97); return Array.from({ length: 98 }, (_, i) => { const day = new Date(start); day.setDate(day.getDate() + i); return dayOf(day); }); }, []);
 
-  function navigate(next: View) { setView(next); setSelectedDay(null); setQuery(''); window.scrollTo({ top: 0 }); }
-  function openDay(day: string) { setSelectedDay(day); setQuery(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  // ── 存储：状态刷新、操作日志、快照与恢复 ──
+  const currentState = () => ({ store: data, settings, theme, updatedAt: new Date().toISOString() });
+  async function refreshStorage() {
+    setStorageInfo(await storageStatus(currentState()));
+    setSnapshots(await listSnapshots());
+    setJournal(await listJournal(12));
+  }
+  function logEvent(kind: JournalKind, text: string, entry?: Entry) {
+    void appendJournal(kind, text, entry).then(() => refreshStorage());
+  }
+  async function takeSnapshot(reason: string) {
+    const snapshot = await createSnapshot(currentState(), reason);
+    await refreshStorage();
+    setNotice(snapshot ? '已存下一份快照。' : '这台设备暂时存不下快照。');
+  }
+  async function restoreSnapshotById(id: string) {
+    const snapshot = await readSnapshot(id);
+    if (!snapshot) { setNotice('找不到这份快照。'); return; }
+    setData(snapshot.state.store);
+    setSettings({ ...blankSettings, ...snapshot.state.settings });
+    setTheme(snapshot.state.theme);
+    writeMirrorState(snapshot.state);
+    await writeState(snapshot.state);
+    await appendJournal('state.restored', `恢复到 ${new Date(snapshot.at).toLocaleString('zh-CN')} 的快照`);
+    await refreshStorage();
+    setNotice('已经回到那份快照的状态。');
+  }
+  async function restoreDeletedEntry(entry: Entry) {
+    setData(current => current.entries.some(item => item.id === entry.id) ? current : { ...current, entries: [...current.entries, entry] });
+    await appendJournal('entry.created', `找回了一条被删除的记忆：${entry.content.slice(0, 20)}`);
+    await refreshStorage();
+    setNotice('这条记忆已经回来了。');
+  }
+  async function removeSnapshot(id: string) {
+    await deleteSnapshot(id);
+    await refreshStorage();
+    setNotice('这份快照已删除。');
+  }
+  async function clearEverything() {
+    await createSnapshot(currentState(), '清空前快照');
+    await clearStorage();
+    setData(emptyStore);
+    setSettings(blankSettings);
+    setMessages([]);
+    await refreshStorage();
+    setNotice('本机数据已清空。清空前留了一份快照，可以在下面恢复。');
+  }
+
+  function navigate(next: View) { setView(next); setSelectedDay(null); setQuery(''); window.scrollTo({ top: 0 }); }  function openDay(day: string) { setSelectedDay(day); setQuery(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   function changeMonth(delta: number) { const [year, number] = month.split('-').map(Number); const next = new Date(year, number - 1 + delta, 1); setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`); }
-  function saveEntry() { if (!draft.trim() || !ready) return; const now = new Date().toISOString(); const entry: Entry = editing ? { ...editing, content: draft.trim(), updatedAt: now } : { id: uid(), content: draft.trim(), source: 'user', createdAt: now, updatedAt: now }; setData(current => ({ ...current, entries: editing ? current.entries.map(item => item.id === entry.id ? entry : item) : [...current.entries, entry] })); setDraft(''); setEditing(null); setNotice('已妥善记下。'); }
+  function saveEntry() { if (!draft.trim() || !ready) return; const now = new Date().toISOString(); const entry: Entry = editing ? { ...editing, content: draft.trim(), updatedAt: now } : { id: uid(), content: draft.trim(), source: 'user', createdAt: now, updatedAt: now }; setData(current => ({ ...current, entries: editing ? current.entries.map(item => item.id === entry.id ? entry : item) : [...current.entries, entry] })); logEvent(editing ? 'entry.edited' : 'entry.created', editing ? '修改了一条记忆' : '记下了一条新记忆'); setDraft(''); setEditing(null); setNotice('已妥善记下。'); }
   function openActions(entry: Entry) { setActionEntry(entry); setTaskTitle(entry.content.slice(0, 100)); setPendingDelete(false); }
   function addTask() { if (!actionEntry || !taskTitle.trim()) return; if (tasks.some(item => item.sourceId === actionEntry.id)) { setNotice('这条记录已关联事项。'); return; } setData(current => ({ ...current, tasks: [...current.tasks, { id: uid(), title: taskTitle.trim(), status: 'open', sourceId: actionEntry.id, createdAt: new Date().toISOString() }] })); setActionEntry(null); setNotice('已建立事项，原始记录仍保留。'); }
   function setStatus(id: string, status: Task['status']) { setData(current => ({ ...current, tasks: current.tasks.map(item => item.id === id ? { ...item, status } : item) })); }
@@ -181,7 +265,7 @@ export default function Home() {
       updatedAt: now,
     };
     setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === updated.id ? updated : entry) }));
-    setDetailJudgment(updated); setCorrecting(false); setCorrectionReason(''); setCorrectionNote(''); setNotice('已记录你的纠正。');
+    setDetailJudgment(updated); setCorrecting(false); setCorrectionReason(''); setCorrectionNote(''); logEvent('judgment.updated', `纠正了一条观察：${detailJudgment.topic}`); setNotice('已记录你的纠正。');
   }
   function saveObservationEdit() {
     if (!detailJudgment || !editingObservation) return;
@@ -198,7 +282,7 @@ export default function Home() {
     setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === updated.id ? updated : entry) }));
     setDetailJudgment(updated); setEditingObservation(null); setObservationEditError(''); setNotice('已保存修改，旧版本保留在历史里。');
   }
-  function createJudgment(topic: string) { const source = entries.filter(entry => termsFor(entry.content).includes(topic)); const now = new Date().toISOString(); setData(current => ({ ...current, judgments: [...current.judgments, { id: uid(), topic, statement: `“${topic}”在 ${new Set(source.map(entry => dayOf(entry.createdAt))).size} 个记录日中出现。它可能值得回看，目前不能据此推断行为或人格。`, supportIds: source.map(entry => entry.id), counterIds: [], status: 'candidate', origin: 'word', type: 'question', confidence: 'weak', confidenceReason: '仅基于词语重复，没有核对具体情境', nextReviewAt: addDays(today(), 21), versions: [], corrections: [], version: 1, createdAt: now, updatedAt: now }] })); setNotice('已保存候选观察，请先查看原文。'); }
+  function createJudgment(topic: string) { const source = entries.filter(entry => termsFor(entry.content).includes(topic)); const now = new Date().toISOString(); setData(current => ({ ...current, judgments: [...current.judgments, { id: uid(), topic, statement: `“${topic}”在 ${new Set(source.map(entry => dayOf(entry.createdAt))).size} 个记录日中出现。它可能值得回看，目前不能据此推断行为或人格。`, supportIds: source.map(entry => entry.id), counterIds: [], status: 'candidate', origin: 'word', type: 'question', confidence: 'weak', confidenceReason: '仅基于词语重复，没有核对具体情境', nextReviewAt: addDays(today(), 21), versions: [], corrections: [], version: 1, createdAt: now, updatedAt: now }] })); logEvent('judgment.created', `保存了一条候选观察：${topic}`); setNotice('已保存候选观察，请先查看原文。'); }
   async function reviseObservation(item: Judgment) {
     if (revisionBusy || !modelReady) return;
     setRevisionBusy(true); setRevisionError('');
@@ -220,7 +304,7 @@ export default function Home() {
         status: 'candidate', lastReviewedAt: now, nextReviewAt: addDays(dayOf(now), 21), updatedAt: now,
       };
       setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === updated.id ? updated : entry) }));
-      setDetailJudgment(updated); setNotice('已生成修改版，请核对新的判断。');
+      setDetailJudgment(updated); logEvent('judgment.updated', `重写了一条观察：${item.topic}`); setNotice('已生成修改版，请核对新的判断。');
     } catch (error) {
       setRevisionError(error instanceof Error ? error.message : '重写失败，请稍后重试。');
     } finally { setRevisionBusy(false); }
@@ -270,6 +354,7 @@ export default function Home() {
         known.push(digest); saved++;
       }
       setNotice(`已沉淀 ${saved} 周，长期记忆共 ${digests.length + saved} 段。`);
+      logEvent('digest.generated', `沉淀了 ${saved} 周长期记忆`);
     } catch (error) {
       setDigestError(`${digestErrorText(error, '沉淀失败，请稍后重试。')}${saved ? `（已完成 ${saved} 周，其余未保存。）` : ''}`);
     } finally { setDigestBusy(false); setDigestProgress(''); }
@@ -286,6 +371,7 @@ export default function Home() {
       setData(current => ({ ...current, digests: [...current.digests.filter(item => item.start !== start), digest] }));
       setRedigestPending(null);
       setNotice(`已按本周 ${week.entries.length} 条记录重新沉淀。`);
+      logEvent('digest.generated', `重新沉淀了 ${shortDate(week.start)} 那一周`);
     } catch (error) {
       setDigestError(digestErrorText(error, '重新沉淀失败，原来的记忆保持不变。'));
     } finally { setDigestBusy(false); setDigestProgress(''); }
@@ -335,6 +421,7 @@ export default function Home() {
       const raw = await callModel(settings, buildSummaryRequest(day, dayEntries, earlier), 120000);
       const summary = parseSummary(raw, day, dayEntries, settings.model);
       setData(current => ({ ...current, summaries: [...current.summaries.filter(item => item.day !== day), summary] }));
+      logEvent('summary.generated', `生成了 ${day} 的总结`);
       setNotice('这一天的总结已生成并保存在本机。');
     } catch (error) {
       setSummaryError(error instanceof Error ? error.message : '生成失败，请稍后重试。');
@@ -358,9 +445,9 @@ export default function Home() {
 
     {notice && <button className="notice" role="status" onClick={() => setNotice('')}>{notice}<Icon name="close" size={15}/></button>}
 
-    {actionEntry && <Modal title="这条记忆" onClose={() => setActionEntry(null)}><div className="source-preview"><time>{dateLabel(dayOf(actionEntry.createdAt))} · {timeOf(actionEntry.createdAt)}</time><p>{actionEntry.content}</p></div><div className="button-row"><button className="secondary-button" onClick={() => { setEditing(actionEntry); setDraft(actionEntry.content); setActionEntry(null); navigate('home'); setTimeout(() => composerRef.current?.focus(), 50); }}>编辑记录</button><button className="quiet-button" onClick={() => setPendingDelete(true)}>删除记录</button></div><div className="modal-section"><h3>标记这条记录</h3><div className="button-row">{['准确', '部分准确', '不准确', '暂不判断'].map(value => <button key={value} className={actionEntry.feedback === value ? 'secondary-button' : 'quiet-button'} onClick={() => { setData(current => ({ ...current, entries: current.entries.map(item => item.id === actionEntry.id ? { ...item, feedback: value, updatedAt: new Date().toISOString() } : item) })); setActionEntry(current => current ? { ...current, feedback: value } : null); }}>{value}</button>)}</div></div>{pendingDelete && <div className="delete-confirm"><p>删除原文后，关联事项保留，判断证据会显示为已删除。</p><button className="danger-button" onClick={() => { setData(current => ({ ...current, entries: current.entries.filter(item => item.id !== actionEntry.id) })); setActionEntry(null); }}>确认删除</button></div>}<div className="modal-section"><h3>确认一件要做的事</h3><label className="field-label">事项名称<input value={taskTitle} onChange={event => setTaskTitle(event.target.value)}/></label><button className="secondary-button" onClick={addTask}>建立事项</button></div></Modal>}
+    {actionEntry && <Modal title="这条记忆" onClose={() => setActionEntry(null)}><div className="source-preview"><time>{dateLabel(dayOf(actionEntry.createdAt))} · {timeOf(actionEntry.createdAt)}</time><p>{actionEntry.content}</p></div><div className="button-row"><button className="secondary-button" onClick={() => { setEditing(actionEntry); setDraft(actionEntry.content); setActionEntry(null); navigate('home'); setTimeout(() => composerRef.current?.focus(), 50); }}>编辑记录</button><button className="quiet-button" onClick={() => setPendingDelete(true)}>删除记录</button></div><div className="modal-section"><h3>标记这条记录</h3><div className="button-row">{['准确', '部分准确', '不准确', '暂不判断'].map(value => <button key={value} className={actionEntry.feedback === value ? 'secondary-button' : 'quiet-button'} onClick={() => { setData(current => ({ ...current, entries: current.entries.map(item => item.id === actionEntry.id ? { ...item, feedback: value, updatedAt: new Date().toISOString() } : item) })); setActionEntry(current => current ? { ...current, feedback: value } : null); }}>{value}</button>)}</div></div>{pendingDelete && <div className="delete-confirm"><p>删除原文后，关联事项保留，判断证据会显示为已删除。</p><button className="danger-button" onClick={() => { logEvent('entry.deleted', `删除了一条记忆：${actionEntry.content.slice(0, 20)}`, actionEntry); setData(current => ({ ...current, entries: current.entries.filter(item => item.id !== actionEntry.id) })); setActionEntry(null); }}>确认删除</button></div>}<div className="modal-section"><h3>确认一件要做的事</h3><label className="field-label">事项名称<input value={taskTitle} onChange={event => setTaskTitle(event.target.value)}/></label><button className="secondary-button" onClick={addTask}>建立事项</button></div></Modal>}
     {showSummary && <Modal title="把今天重新看一遍" onClose={() => setShowSummary(false)}>{(() => { const s = summaryFor(today()); return <><p className="modal-intro">基于今天 {todaysEntries.length} 条原始记录{s ? `，由 ${s.model} 生成` : ''}。AI 只读取今天的记录，不补充未记录的事实。</p>{!todaysEntries.length ? <div className="empty-state"><p>今天还没有记录，暂不形成总结。</p></div> : <>{s ? <div className="ai-summary">{s.overview && <p className="summary-overview">{s.overview}</p>}{[['今天反复出现', s.repeated], ['还没有解决', s.unresolved], ['与过去的连接', s.connections], ['情绪回看', s.emotion], ['明天的收窄', s.tomorrow]].filter(([, text]) => text).map(([label, text]) => <section className="summary-block" key={label}><span className="badge">{label}</span><p>{text}</p></section>)}{s.sourceIds.length > 0 && <details><summary>本次引用的 {s.sourceIds.length} 条原文</summary>{s.sourceIds.map(id => { const source = entries.find(entry => entry.id === id); return source ? <blockquote key={id}><time>{timeOf(source.createdAt)}</time>{source.content}</blockquote> : null; })}</details>}<p className="muted">生成于 {new Date(s.generatedAt).toLocaleString('zh-CN')} · 共 {s.entryCount} 条记录</p></div> : <div className="ai-empty"><h3>{modelReady ? '还没有生成今天的总结' : '连接模型后可以生成总结'}</h3><p>{modelReady ? `今天有 ${todaysEntries.length} 条记录。让模型把它们整理成一份可以五分钟读完的总结。` : '在“偏好与数据”中填写接口地址与模型，AI 就能阅读今天的记录并生成总结。'}</p></div>}<div className="button-row"><button className="primary-button" disabled={summaryBusy || !modelReady} onClick={() => void generateSummary(today())}>{summaryBusy ? '正在整理今天的记录……' : s ? '重新生成' : '生成今天的总结'}</button><button className="quiet-button" onClick={() => { setShowSummary(false); navigate('memory'); openDay(today()); }}>看原始记录</button></div>{summaryError && <p className="form-error">{summaryError}</p>}{!modelReady && <p className="muted">没有连接模型时，仍然可以在“记忆”里按日期阅读原文。</p>}</>}</>; })()}</Modal>}
-    {showSettings && <Modal title="偏好与数据" onClose={() => setShowSettings(false)}><section className="settings-section"><div className="section-heading"><h3>外观</h3><span className="muted">跟随你的阅读习惯</span></div><div className="theme-choices"><button className={theme === 'light' ? 'selected' : ''} onClick={() => setTheme('light')}><span className="theme-preview preview-light"/>白色<span>明亮、温和</span></button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => setTheme('dark')}><span className="theme-preview preview-dark"/>深色<span>安静、柔和</span></button></div></section><section className="settings-section"><h3>备份与换设备</h3><p className="muted">备份包含记录、事项与阶段性观察，不包含访问密钥。</p><div className="button-row"><button className="secondary-button" onClick={() => void exportData()}><Icon name="download" size={17}/>导出备份</button><button className="secondary-button" onClick={() => { setShowSettings(false); setImportOpen(true); }}><Icon name="upload" size={17}/>导入备份</button></div>{backupText && <details><summary>文件未保存？复制完整备份</summary><textarea className="backup-text" readOnly value={backupText} aria-label="完整备份内容"/><button className="quiet-button" onClick={async () => { try { await navigator.clipboard.writeText(backupText); setNotice('备份已复制。'); } catch { setNotice('请长按备份文本，全选后复制。'); } }}>复制备份</button></details>}</section><section className="settings-section"><h3>模型连接</h3><p className="muted">不连接模型也能记录与检索。静态网页直接请求接口，需要服务支持浏览器跨域。</p><label className="field-label">接口地址<input placeholder="填写完整接口地址，结尾为 /v1" value={settings.baseUrl} onChange={event => setSettings(current => ({ ...current, baseUrl: event.target.value }))}/></label><label className="field-label">模型名称<input placeholder="填写模型名称" value={settings.model} onChange={event => setSettings(current => ({ ...current, model: event.target.value }))}/></label><label className="field-label">访问密钥<input type="password" autoComplete="off" value={settings.apiKey} onChange={event => setSettings(current => ({ ...current, apiKey: event.target.value }))}/></label></section>{keyboardDiag.length > 0 && <details className="settings-section"><summary>键盘与底栏诊断</summary><p className="muted">记录最近几次软键盘与底部导航的状态变化，用于真机排查，不影响正常使用。</p><ul className="diag-list">{keyboardDiag.map((entry, index) => <li key={index}><span>{new Date(entry.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>{entry.label}{entry.detail ? ` · ${entry.detail}` : ''}</li>)}</ul></details>}<details className="settings-section"><summary>数据管理与版本</summary><p className="muted">{VERSION} · 本机存储 · 不自动同步</p><button className="danger-button" onClick={() => { if (window.confirm('确认清空本机全部记录、事项与判断？请先导出备份。')) { setData(emptyStore); setSettings(blankSettings); setMessages([]); setShowSettings(false); } }}>清空本机数据</button></details></Modal>}
+    {showSettings && <Modal title="偏好与数据" onClose={() => setShowSettings(false)}><section className="settings-section"><div className="section-heading"><h3>外观</h3><span className="muted">跟随你的阅读习惯</span></div><div className="theme-choices"><button className={theme === 'light' ? 'selected' : ''} onClick={() => setTheme('light')}><span className="theme-preview preview-light"/>白色<span>明亮、温和</span></button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => setTheme('dark')}><span className="theme-preview preview-dark"/>深色<span>安静、柔和</span></button></div></section><section className="settings-section"><h3>备份与换设备</h3><p className="muted">备份包含记录、事项与阶段性观察，不包含访问密钥。</p><div className="button-row"><button className="secondary-button" onClick={() => void exportData()}><Icon name="download" size={17}/>导出备份</button><button className="secondary-button" onClick={() => { setShowSettings(false); setImportOpen(true); }}><Icon name="upload" size={17}/>导入备份</button></div>{backupText && <details><summary>文件未保存？复制完整备份</summary><textarea className="backup-text" readOnly value={backupText} aria-label="完整备份内容"/><button className="quiet-button" onClick={async () => { try { await navigator.clipboard.writeText(backupText); setNotice('备份已复制。'); } catch { setNotice('请长按备份文本，全选后复制。'); } }}>复制备份</button></details>}</section><section className="settings-section"><h3>模型连接</h3><p className="muted">不连接模型也能记录与检索。静态网页直接请求接口，需要服务支持浏览器跨域。</p><label className="field-label">接口地址<input placeholder="填写完整接口地址，结尾为 /v1" value={settings.baseUrl} onChange={event => setSettings(current => ({ ...current, baseUrl: event.target.value }))}/></label><label className="field-label">模型名称<input placeholder="填写模型名称" value={settings.model} onChange={event => setSettings(current => ({ ...current, model: event.target.value }))}/></label><label className="field-label">访问密钥<input type="password" autoComplete="off" value={settings.apiKey} onChange={event => setSettings(current => ({ ...current, apiKey: event.target.value }))}/></label></section><section className="settings-section"><div className="section-heading"><h3>本机存储</h3><span className="muted">{storageInfo ? (storageInfo.mode === 'indexeddb' ? 'IndexedDB' : '浏览器存储') : '读取中'}</span></div><p className="muted">{storageInfo ? `${storageInfo.entries} 条记录 · ${storageInfo.tasks} 件事项 · ${storageInfo.judgments} 条观察${storageInfo.usage ? ` · 已用 ${(storageInfo.usage / 1048576).toFixed(1)} MB${storageInfo.quota ? ` / 可用 ${(storageInfo.quota / 1048576).toFixed(0)} MB` : ''}` : ''}` : ''}{storageInfo?.lastError ? ` · ${storageInfo.lastError}` : ''}</p><div className="button-row"><button className="secondary-button" onClick={() => void takeSnapshot('手动快照')}>立即存一份快照</button></div>{!!snapshots.length && <div className="snapshot-list">{snapshots.map(snapshot => <div className="snapshot-item" key={snapshot.id}><div><time>{new Date(snapshot.at).toLocaleString('zh-CN')}</time><small>{snapshot.reason}</small></div><div className="button-row"><button className="text-button" onClick={() => void restoreSnapshotById(snapshot.id)}>恢复</button><button className="text-button" onClick={() => void removeSnapshot(snapshot.id)}>删除</button></div></div>)}</div>}{!!journal.length && <details className="journal-list"><summary>操作记录（最近 {journal.length} 条）</summary>{journal.map(event => <div className="journal-item" key={event.id}><time>{new Date(event.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time><span>{event.text}</span>{event.kind === 'entry.deleted' && event.entry && <button className="text-button" onClick={() => void restoreDeletedEntry(event.entry as Entry)}>找回</button>}</div>)}</details>}</section>{keyboardDiag.length > 0 && <details className="settings-section"><summary>键盘与底栏诊断</summary><p className="muted">记录最近几次软键盘与底部导航的状态变化，用于真机排查，不影响正常使用。</p><ul className="diag-list">{keyboardDiag.map((entry, index) => <li key={index}><span>{new Date(entry.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>{entry.label}{entry.detail ? ` · ${entry.detail}` : ''}</li>)}</ul></details>}<details className="settings-section"><summary>数据管理与版本</summary><p className="muted">{VERSION} · 本机存储 · 不自动同步</p><button className="danger-button" onClick={() => { if (window.confirm('确认清空本机全部记录、事项与判断？请先导出备份。')) { void clearEverything(); } }}>清空本机数据</button><p className="muted">清空前会自动留一份快照，可以在「本机存储」里恢复。</p></details></Modal>}
     {detailJudgment && (() => {
       const item = detailJudgment!;
       const supportEntries = item.supportIds.map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry));
