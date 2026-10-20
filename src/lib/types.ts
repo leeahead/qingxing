@@ -30,7 +30,7 @@ export type Judgment = {
   createdAt: string;
   updatedAt: string;
 };
-export type Settings = { baseUrl: string; apiKey: string; model: string };
+export type Settings = { baseUrl: string; apiKey: string; model: string; embedModel?: string };
 export type DailySummary = {
   day: string;
   overview?: string;
@@ -58,10 +58,36 @@ export type MemoryDigest = {
   generatedAt: string;
   model: string;
 };
+/**
+ * 「关于你」档案块的一行。
+ * AI 提出的（source:'ai'）默认未确认，用户确认后才进入提示词。
+ */
+export type ProfileKind = 'identity' | 'value' | 'person' | 'focus';
+export type ProfileItem = {
+  id: string;
+  kind: ProfileKind;
+  text: string;
+  /** 挂着的证据（记录 id）；用户手写的可以不挂 */
+  evidenceIds: string[];
+  source: 'user' | 'ai';
+  confirmed: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type BackupMeta = {
+  /** 上次把数据导出到设备之外的时间 */
+  lastExportAt?: string;
+  /** 上次导出时的条目数 */
+  lastExportCount?: number;
+  /** 已授权的自动备份目录名（File System Access） */
+  autoDirName?: string;
+  /** 上次自动写入目录的时间 */
+  lastAutoAt?: string;
+};
 /** 一个已结束、有记录的自然周（周一到周日），用于沉淀长期记忆。 */
 export type DigestWeek = { start: string; end: string; entries: Entry[] };
 export type ChatScope = 'all' | 'entries' | 'judgments';
-export type Store = { entries: Entry[]; tasks: Task[]; judgments: Judgment[]; memoryFeedback: Record<string, string>; summaries: DailySummary[]; digests: MemoryDigest[] };
+export type Store = { entries: Entry[]; tasks: Task[]; judgments: Judgment[]; memoryFeedback: Record<string, string>; summaries: DailySummary[]; digests: MemoryDigest[]; profile: ProfileItem[] };
 export type Theme = 'dark' | 'light';
 export type View = 'home' | 'memory' | 'judgments' | 'chat' | 'tasks';
 export type Message = { role: 'user' | 'assistant'; content: string; sources?: Entry[] };

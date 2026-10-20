@@ -3,7 +3,7 @@
 
 import type { ObservationType } from './types';
 
-export const VERSION = '4.4 · 存储层与可恢复';
+export const VERSION = '4.5 · 关于你与自动备份';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -12,10 +12,11 @@ export const keys = {
   memoryFeedback: 'qingxing.memory-feedback.v1',
   summaries: 'qingxing.summaries.v1',
   digests: 'qingxing.digests.v1',
+  profile: 'qingxing.profile.v1',
 };
 
 /** 备份文件的 schema 版本；新增数据结构时要一起升级并兼容旧备份。 */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const dayOf = (value: string | Date) => new Date(value).toLocaleDateString('sv-SE');
 export const today = () => dayOf(new Date());
@@ -39,5 +40,6 @@ export const navItems: { id: 'home' | 'memory' | 'judgments' | 'chat' | 'tasks';
 
 export const confidenceLabels = { weak: '证据较弱', medium: '证据中等', strong: '证据较强' } as const;
 export const observationTypeLabels: Record<ObservationType, string> = { pattern: '模式', change: '变化', tension: '矛盾', question: '问题', hypothesis: '假设' };
+export const profileKindLabels = { identity: '我是谁', value: '我在意的事', person: '重要的人', focus: '眼下的焦点' } as const;
 export const judgmentStatusLabels = { candidate: '待核对', confirmed: '已确认', uncertain: '暂不确定', withdrawn: '已撤回' } as const;
 export const correctionReasons = ['不准确', '只发生过一次', '忽略了另一条记录', '当时情境不同', '已经变化了', '以后不再使用'];

@@ -60,6 +60,14 @@ export type ViewProps = {
   setObservationFilter: (filter: 'all' | 'candidate' | 'review' | 'confirmed' | 'archived') => void;
   setShowSummary: (open: boolean) => void;
   setShowDigests: (open: boolean) => void;
+  setShowSettings: (open: boolean) => void;
+  /** 已确认的「关于你」条目数 */
+  profileCount: number;
+  /** 档案条目总数（含待确认的） */
+  profileTotal: number;
+  onOpenProfile: () => void;
+  /** 距离上次把数据带出设备过了多少天；没备份过是 null */
+  backupAgeDays: number | null;
   setRedigestPending: (id: string | null) => void;
   setRemoveDigestPending: (id: string | null) => void;
   setDigestError: (message: string) => void;

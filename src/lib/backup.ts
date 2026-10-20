@@ -2,7 +2,7 @@
 // 备份文件包含记录、事项、阶段性观察、每日总结与长期记忆，不包含访问密钥。
 // 校验集中在这里，界面只负责给出人话提示。
 
-import type { DailySummary, Entry, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, Store, Task, Theme } from './types';
+import type { DailySummary, Entry, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, ProfileItem, Store, Task, Theme } from './types';
 import { SCHEMA_VERSION, today, validDate } from './utils';
 
 /** 导出成备份文本。 */
@@ -38,6 +38,13 @@ export function parseBackupText(text: string): { store: Store; skipped: number }
       evidence: Array.isArray(item.evidence) ? item.evidence.filter((evidence: MemoryEvidence) => evidence && typeof evidence.id === 'string' && typeof evidence.text === 'string').map((evidence: MemoryEvidence) => ({ id: evidence.id, date: typeof evidence.date === 'string' ? evidence.date : item.start, text: evidence.text })) : [],
       entryCount: Number(item.entryCount) || 0,
     })),
+    // 「关于你」档案块是 v7 才有的；旧备份（v6）没有这一项，按空处理。
+    profile: (Array.isArray(raw.profile) ? raw.profile : []).filter((item: ProfileItem) => item && typeof item.id === 'string' && typeof item.text === 'string' && ['identity', 'value', 'person', 'focus'].includes(item.kind)).map((item: ProfileItem) => ({
+      ...item,
+      evidenceIds: Array.isArray(item.evidenceIds) ? item.evidenceIds.map(String) : [],
+      source: item.source === 'ai' ? 'ai' : 'user',
+      confirmed: Boolean(item.confirmed),
+    })),
   };
   const skipped = raw.entries.length + raw.tasks.length - store.entries.length - store.tasks.length;
   return { store, skipped };
@@ -57,11 +64,61 @@ export function mergeStores(current: Store, incoming: Store): Store {
     // 总结按天去重，同一天以导入的那份为准。
     summaries: [...new Map([...current.summaries, ...incoming.summaries].map(item => [item.day, item])).values()],
     digests: byId(current.digests, incoming.digests),
+    profile: byId(current.profile, incoming.profile),
   };
 }
 
 /** 备份文件的默认名字。 */
 export const backupFileName = () => `qingxing-${today()}.json`;
+
+/* --------------------------- 自动备份（目录授权） --------------------------- */
+
+export type DirectoryHandleLike = {
+  name: string;
+  getFileHandle: (name: string, options: { create: boolean }) => Promise<FileSystemFileHandleLike>;
+  queryPermission?: (descriptor: { mode: 'read' | 'readwrite' }) => Promise<PermissionState>;
+  requestPermission?: (descriptor: { mode: 'read' | 'readwrite' }) => Promise<PermissionState>;
+};
+
+type FileSystemFileHandleLike = {
+  createWritable: () => Promise<{ write: (data: string) => Promise<void>; close: () => Promise<void> }>;
+};
+
+declare global {
+  interface Window {
+    showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<DirectoryHandleLike>;
+  }
+}
+
+/** 这台设备支不支持「授权一个目录，之后自动写备份」。 */
+export const supportsAutoBackup = () => typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+
+/** 自动备份写进目录的文件名：同一天覆盖同一个文件，不会攒出一堆垃圾。 */
+export const autoBackupFileName = () => `清醒备份-${today()}.json`;
+
+/** 让用户挑一个目录，用来放自动备份。 */
+export async function pickBackupDirectory(): Promise<DirectoryHandleLike | null> {
+  if (!window.showDirectoryPicker) throw new Error('这台设备不支持自动写入目录，会改用「导出」保存。');
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+  return handle;
+}
+
+/** 往已授权的目录里写一份备份。返回写入的文件名；没权限或失败会抛错。 */
+export async function writeBackupToDirectory(handle: DirectoryHandleLike, text: string): Promise<string> {
+  if (handle.queryPermission) {
+    const state = await handle.queryPermission({ mode: 'readwrite' });
+    if (state !== 'granted' && handle.requestPermission) {
+      const asked = await handle.requestPermission({ mode: 'readwrite' });
+      if (asked !== 'granted') throw new Error('没有拿到这个目录的写入许可。');
+    }
+  }
+  const name = autoBackupFileName();
+  const fileHandle = await handle.getFileHandle(name, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(text);
+  await writable.close();
+  return name;
+}
 
 /**
  * 保存备份文件：优先走系统分享（套壳里也能存到「文件」或发出去），

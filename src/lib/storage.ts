@@ -9,14 +9,18 @@
 // 全部函数都不抛错：IndexedDB 不可用（隐私模式、旧 WebView、配额被拒）时自动退回 localStorage，
 // 应用照常能用，只是容量回到 5MB。
 
-import type { Entry, Settings, Store, Theme } from './types';
+import type { BackupMeta, Entry, Settings, Store, Theme } from './types';
 import { keys, uid } from './utils';
 
+const BACKUP_META_KEY = 'qingxing.backup.v1';
+const DIR_HANDLE_KEY = 'backupDir';
+
 const DB_NAME = 'qingxing';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_STATE = 'state';
 const STORE_JOURNAL = 'journal';
 const STORE_SNAPSHOTS = 'snapshots';
+const STORE_VECTORS = 'vectors';
 const STATE_KEY = 'current';
 
 /** 日志最多留多少条；快照最多留多少份。 */
@@ -29,6 +33,7 @@ export type JournalKind =
   | 'entry.created' | 'entry.edited' | 'entry.deleted'
   | 'judgment.created' | 'judgment.updated'
   | 'summary.generated' | 'digest.generated'
+  | 'profile.updated'
   | 'state.restored' | 'state.cleared';
 
 export type JournalEvent = {
@@ -73,6 +78,7 @@ function openDatabase(): Promise<IDBDatabase | null> {
       if (!db.objectStoreNames.contains(STORE_STATE)) db.createObjectStore(STORE_STATE, { keyPath: 'key' });
       if (!db.objectStoreNames.contains(STORE_JOURNAL)) db.createObjectStore(STORE_JOURNAL, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORE_SNAPSHOTS)) db.createObjectStore(STORE_SNAPSHOTS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_VECTORS)) db.createObjectStore(STORE_VECTORS, { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => { noteError(request.error); resolve(null); };
@@ -119,6 +125,7 @@ export function readMirrorState(): PersistedState | null {
     if (!Array.isArray(loaded.entries) || !Array.isArray(loaded.tasks) || !Array.isArray(loaded.judgments)) return null;
     if (!Array.isArray(loaded.summaries)) loaded.summaries = [];
     if (!Array.isArray(loaded.digests)) loaded.digests = [];
+    if (!Array.isArray(loaded.profile)) loaded.profile = [];
     const settings = { baseUrl: '', apiKey: '', model: '', ...JSON.parse(localStorage.getItem('qingxing.settings.v1') || '{}') } as Settings;
     const savedTheme = localStorage.getItem('qingxing.theme.v1');
     const theme: Theme = savedTheme === 'light' || savedTheme === 'mono' ? 'light' : 'dark';
@@ -149,6 +156,8 @@ export async function readState(): Promise<PersistedState | null> {
   try {
     const row = await dbGet<{ key: string; state: PersistedState }>(db, STORE_STATE, STATE_KEY);
     if (!row?.state?.store?.entries) return null;
+    const store = row.state.store;
+    if (!Array.isArray(store.profile)) store.profile = [];
     return row.state;
   } catch (error) {
     noteError(error);
@@ -238,6 +247,78 @@ export async function readSnapshot(id: string): Promise<Snapshot | null> {
   try {
     const row = await dbGet<Snapshot>(db, STORE_SNAPSHOTS, id);
     return row ?? null;
+  } catch (error) {
+    noteError(error);
+    return null;
+  }
+}
+
+/* ------------------------------ 向量缓存 ------------------------------ */
+
+export type VectorRow = { id: string; vector: number[]; at: string; model?: string };
+
+/** 读出已缓存的向量。 */
+export async function readVectors(): Promise<Map<string, VectorRow>> {
+  const db = await openDatabase();
+  if (!db) return new Map();
+  try {
+    const all = await dbGetAll<VectorRow>(db, STORE_VECTORS);
+    return new Map(all.map(row => [row.id, row]));
+  } catch (error) {
+    noteError(error);
+    return new Map();
+  }
+}
+
+/** 写入一批向量。 */
+export async function writeVectors(rows: VectorRow[]): Promise<number> {
+  const db = await openDatabase();
+  if (!db || !rows.length) return 0;
+  try {
+    for (const row of rows) await dbPut(db, STORE_VECTORS, row);
+    return rows.length;
+  } catch (error) {
+    noteError(error);
+    return 0;
+  }
+}
+
+/** 丢掉某个记录的向量（记录被删或被改时调用）。 */
+export async function deleteVectors(ids: string[]): Promise<void> {
+  const db = await openDatabase();
+  if (!db || !ids.length) return;
+  try { for (const id of ids) await dbDelete(db, STORE_VECTORS, id); } catch (error) { noteError(error); }
+}
+
+/* ------------------------------ 备份元信息 ------------------------------ */
+
+/** 备份相关的元信息：上次导出时间、条数、是否授权了自动备份目录。 */
+export function readBackupMeta(): BackupMeta {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BACKUP_META_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw as BackupMeta : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeBackupMeta(meta: BackupMeta): void {
+  try { localStorage.setItem(BACKUP_META_KEY, JSON.stringify(meta)); } catch { /* ignore */ }
+}
+
+/** 记住用户授权的自动备份目录（File System Access 的目录句柄可以存进 IndexedDB）。 */
+export async function saveDirectoryHandle(handle: unknown): Promise<void> {
+  const db = await openDatabase();
+  if (!db) return;
+  try { await dbPut(db, STORE_STATE, { key: DIR_HANDLE_KEY, handle }); } catch (error) { noteError(error); }
+}
+
+export async function readDirectoryHandle<T = unknown>(): Promise<T | null> {
+  const db = await openDatabase();
+  if (!db) return null;
+  try {
+    const row = await dbGet<{ key: string; handle: T }>(db, STORE_STATE, DIR_HANDLE_KEY);
+    return row?.handle ?? null;
   } catch (error) {
     noteError(error);
     return null;

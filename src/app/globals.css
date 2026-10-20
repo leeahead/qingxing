@@ -107,3 +107,23 @@
 .journal-item:last-child{border-bottom:0}
 .journal-item time{color:var(--faint);flex-shrink:0;font-variant-numeric:tabular-nums}
 .journal-item span{flex:1;line-height:1.6}
+/* 「关于你」档案块 */
+.profile-entry{display:flex;align-items:center;gap:13px;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface);margin-top:14px;padding:15px 18px;border-radius:20px}
+.profile-entry span{flex:1;min-width:0}
+.profile-entry strong{display:block;font-size:14px;font-weight:600}
+.profile-entry small{display:block;font-size:11px;color:var(--muted);line-height:1.6;margin-top:2px}
+.profile-group{margin-top:20px}
+.profile-item{padding:13px 0;border-bottom:1px solid var(--line)}
+.profile-item:last-of-type{border-bottom:0}
+.profile-item p{font-size:13px;line-height:1.7}
+.profile-item.pending{opacity:.92}
+.profile-item-meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;font-size:11px}
+.profile-item .button-row{margin-top:8px;gap:8px}
+.profile-add{margin-top:10px}
+.profile-add input{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--surface-raised);padding:11px 13px;font-size:13px;color:var(--ink);outline:none}
+.profile-add input:focus{border-color:var(--accent)}
+/* 备份提醒 */
+.backup-nudge{display:flex;align-items:center;gap:13px;width:100%;text-align:left;margin-top:16px;padding:15px 18px;border-radius:20px}
+.backup-nudge span{flex:1;min-width:0}
+.backup-nudge strong{display:block;font-size:13px;font-weight:600}
+.backup-nudge small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
