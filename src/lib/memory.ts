@@ -161,8 +161,6 @@ export function profileSourceEntries(entries: Entry[], lastBuildAt?: string): { 
   return { list: fresh.slice(-80), window: `自上次画像以来的 ${fresh.length} 条` };
 }
 
-
-
 /**
  * 画像里注入洞察提示词的那一块。正文（narrative）优先，四个骨架数组补在后面。
  * 提示词与解析在 lib/ai.ts：这里只管「读哪段、留几版、怎么拼成上下文」。

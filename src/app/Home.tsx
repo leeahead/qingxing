@@ -199,7 +199,6 @@ export default function Home() {
    * L2 场景层：本地算，不花 token。
    * 记录一进来就重新聚合，算出稳定结果后才写回本机（写回前比对签名，避免边渲染边写）。
    */
-  const sceneSignature = scenes.map(scene => `${scene.theme}:${scene.entryIds.length}:${scene.lastActiveAt}:${scene.archived ? 'a' : ''}`).join('|');
   const savedSceneSignature = useRef('');
   useEffect(() => {
     if (!ready) return;
