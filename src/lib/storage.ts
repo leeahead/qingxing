@@ -14,6 +14,8 @@ import { keys, uid } from './utils';
 
 const BACKUP_META_KEY = 'qingxing.backup.v1';
 const DIR_HANDLE_KEY = 'backupDir';
+/** 记着“模型连接配置已经从快照里自动找回过一次”，避免反复复活用户主动清掉的配置。 */
+const RESCUED_FLAG = 'qingxing.settings-rescued.v1';
 
 const DB_NAME = 'qingxing';
 const DB_VERSION = 2;
@@ -158,6 +160,22 @@ export function writeMirrorState(state: PersistedState): boolean {
   }
 }
 
+/**
+ * 单独读镜像里的模型设置。
+ * 主存与镜像可能不同步：一次写入失败、一次升级，都会让两边只存到一份配置。
+ * 分开读，才知道该信谁，而不是让空的那边把配好的模型盖掉。
+ */
+export function readMirrorSettings(): Partial<Settings> {
+  try {
+    const raw = localStorage.getItem('qingxing.settings.v1');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 /* ------------------------------ 主存读写 ------------------------------ */
 
 /**
@@ -184,6 +202,9 @@ export async function readState(): Promise<PersistedState | null> {
     const row = await dbGet<{ key: string; state: PersistedState }>(db, STORE_STATE, STATE_KEY);
     if (!row?.state?.store?.entries) return null;
     normalizeStore(row.state.store);
+    // 早期版本存下的主存里可能没有设置这一段；补上空壳，
+    // 不然界面会把「没有这一段」当成「用户没配过模型」。
+    if (!row.state.settings || typeof row.state.settings !== 'object') row.state.settings = { baseUrl: '', apiKey: '', model: '' };
     return row.state;
   } catch (error) {
     noteError(error);
@@ -394,6 +415,31 @@ export async function deleteSnapshot(id: string): Promise<void> {
   const db = await openDatabase();
   if (!db) return;
   try { await dbDelete(db, STORE_SNAPSHOTS, id); } catch (error) { noteError(error); }
+}
+
+/**
+ * 在快照里找模型连接配置。
+ * 主存与镜像都空掉时，快照是唯一还留着接口地址与密钥的地方。
+ */
+export async function findSettingsInSnapshots(): Promise<{ settings: Partial<Settings>; at: string } | null> {
+  const snapshots = await listSnapshots();
+  for (const snapshot of snapshots) {
+    const baseUrl = snapshot.state?.settings?.baseUrl;
+    if (typeof baseUrl === 'string' && baseUrl.trim()) return { settings: snapshot.state.settings, at: snapshot.at };
+  }
+  return null;
+}
+
+/**
+ * 自动找回一次模型连接配置。
+ * 只找一次：用户主动把配置清空之后，不该每次打开都被塞回来。
+ */
+export async function rescueSettingsOnce(): Promise<{ settings: Partial<Settings>; at: string } | null> {
+  try { if (localStorage.getItem(RESCUED_FLAG)) return null; } catch { /* ignore */ }
+  const found = await findSettingsInSnapshots();
+  if (!found) return null;
+  try { localStorage.setItem(RESCUED_FLAG, '1'); } catch { /* ignore */ }
+  return found;
 }
 
 /**

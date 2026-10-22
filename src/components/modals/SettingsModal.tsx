@@ -4,6 +4,7 @@ import type { Entry, Settings, Theme } from '@/lib/types';
 import type { JournalEvent, Snapshot, StorageStatus } from '@/lib/storage';
 import type { EmbeddingProbe } from '@/lib/embedding';
 import type { KeyboardDiag } from '@/lib/keyboard';
+import { chatEndpoint } from '@/lib/ai';
 import { VERSION } from '@/lib/utils';
 import { Icon } from '@/components/Icon';
 import { Modal } from '@/components/Modal';
@@ -29,6 +30,8 @@ export type SettingsModalProps = {
   onRestoreEntry: (entry: Entry) => void;
   onClearAll: () => void;
   onTestConnection: () => void;
+  onRecoverSettings: () => void;
+  modelError: string;
   embedProbe: EmbeddingProbe | null;
   vectorBusy: boolean;
   vectorCount: number;
@@ -42,7 +45,7 @@ export type SettingsModalProps = {
 
 /** 偏好与数据：外观、备份、模型连接、自动整理、本机存储、检索、诊断、清空。 */
 export function SettingsModal(props: SettingsModalProps) {
-  const { settings, setSettings, theme, setTheme, backupMeta, backupText, supportsAuto, onExport, onOpenImport, onAuthorizeDir, onRunAutoBackup, storageInfo, snapshots, journal, onSnapshot, onRestoreSnapshot, onRemoveSnapshot, onRestoreEntry, onClearAll, onTestConnection, embedProbe, vectorBusy, vectorCount, entriesCount, onBuildVectors, autoBusy, onRunAutoPilot, keyboardDiag, onClose } = props;
+  const { settings, setSettings, theme, setTheme, backupMeta, backupText, supportsAuto, onExport, onOpenImport, onAuthorizeDir, onRunAutoBackup, storageInfo, snapshots, journal, onSnapshot, onRestoreSnapshot, onRemoveSnapshot, onRestoreEntry, onClearAll, onTestConnection, onRecoverSettings, modelError, embedProbe, vectorBusy, vectorCount, entriesCount, onBuildVectors, autoBusy, onRunAutoPilot, keyboardDiag, onClose } = props;
   const lastAuto = Math.max(...[settings.lastAutoDigestAt, settings.lastAutoObservationAt, settings.lastAutoProfileAt].map(value => value ? Date.parse(value) : 0));
   return <Modal title="偏好与数据" onClose={onClose}>
     <section className="settings-section">
@@ -76,15 +79,24 @@ export function SettingsModal(props: SettingsModalProps) {
     <section className="settings-section">
       <h3>模型连接</h3>
       <p className="muted">不连接模型也能记录与检索。静态网页直接请求接口，需要服务支持浏览器跨域。</p>
+      {!settings.baseUrl.trim() && <div className="recover-row">
+        <div>
+          <b>这台设备上没找到接口地址</b>
+          <p>可能是换版本时丢了。快照里还留着当时的地址与密钥，可以找回来。</p>
+        </div>
+        <button className="secondary-button" onClick={onRecoverSettings}>从快照找回</button>
+      </div>}
       <label className="field-label">接口地址<input placeholder="填写完整接口地址，结尾为 /v1" value={settings.baseUrl} onChange={event => setSettings(current => ({ ...current, baseUrl: event.target.value }))}/></label>
       <label className="field-label">模型名称<input placeholder="填写模型名称" value={settings.model} onChange={event => setSettings(current => ({ ...current, model: event.target.value }))}/></label>
       <label className="field-label">访问密钥<input type="password" autoComplete="off" value={settings.apiKey} onChange={event => setSettings(current => ({ ...current, apiKey: event.target.value }))}/></label>
       <label className="field-label">向量模型（可选）<input placeholder="填写支持 /embeddings 的模型名；留空则用上面的模型名" value={settings.embedModel || ''} onChange={event => setSettings(current => ({ ...current, embedModel: event.target.value }))}/></label>
+      {settings.baseUrl.trim() && <p className="muted">实际请求：{chatEndpoint(settings)}</p>}
       <div className="button-row">
         <button className="secondary-button" onClick={onTestConnection}>测试连接</button>
         <button className="secondary-button" disabled={vectorBusy} onClick={onBuildVectors}>{vectorBusy ? '正在生成向量……' : entriesCount - vectorCount > 0 ? `为记录生成向量（还有 ${entriesCount - vectorCount} 条）` : '为记录生成向量'}</button>
       </div>
       {embedProbe && <p className={embedProbe.ok ? 'muted' : 'form-error'}>向量接口：{embedProbe.message}</p>}
+      {modelError && <p className="form-error">上一次调用模型失败：{modelError}</p>}
       <p className="muted">已有 {vectorCount} / {entriesCount} 条记录带向量。支持向量时，搜索与提问会用语义找相关记录；不支持就退回关键词，不影响别的功能。</p>
     </section>
 
@@ -134,7 +146,7 @@ export function SettingsModal(props: SettingsModalProps) {
       <summary>数据管理与版本</summary>
       <p className="muted">{VERSION} · 本机存储 · 不自动同步</p>
       <button className="danger-button" onClick={onClearAll}>清空本机数据</button>
-      <p className="muted">清空前会自动留一份快照，可以在「本机存储」里恢复。</p>
+      <p className="muted">清空前会自动留一份快照，可以在「本机存储」里恢复。模型连接是配置，会保留。</p>
     </details>
   </Modal>;
 }

@@ -1577,6 +1577,22 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
   margin-top: 4px;
 }
 
+/* 模型连接走丢时的找回提示：文字可以折行，按钮不能跟着折成两行。 */
+.recover-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+}
+
+.recover-row > div { flex: 1 1 auto; min-width: 0; }
+.recover-row b { font-size: 13.5px; }
+.recover-row p { font-size: 12px; color: var(--muted); line-height: 1.7; margin-top: 4px; }
+.recover-row .secondary-button { flex-shrink: 0; white-space: nowrap; }
+
 .switch {
   flex-shrink: 0;
   width: 46px;

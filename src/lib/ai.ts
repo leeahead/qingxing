@@ -13,22 +13,40 @@ import { buildProfileBlock } from './profile';
 
 export type ChatTurn = { role: 'system' | 'user' | 'assistant'; content: string };
 
+/** 对话接口地址：用户把完整路径也填进来时不要再拼一次，否则必然 404。 */
+export function chatEndpoint(settings: Settings): string {
+  const base = settings.baseUrl.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
+  return `${base}/chat/completions`;
+}
+
 /** 调用用户配置的模型；失败时抛出可读的错误，由界面决定怎么提示。 */
 export async function callModel(settings: Settings, payload: ChatTurn[], timeout = 90000): Promise<string> {
-  const response = await fetch(`${settings.baseUrl.trim().replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(timeout),
-    headers: { 'Content-Type': 'application/json', ...(settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
-    body: JSON.stringify({ model: settings.model.trim(), temperature: 0.4, messages: payload }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(chatEndpoint(settings), {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeout),
+      headers: { 'Content-Type': 'application/json', ...(settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}) },
+      body: JSON.stringify({ model: settings.model.trim(), temperature: 0.4, messages: payload }),
+    });
+  } catch (error) {
+    // 浏览器的 “Failed to fetch” 对用户没有意义：把最常见的原因直接写出来。
+    if (error instanceof DOMException && error.name === 'TimeoutError') throw new Error(`等了 ${Math.round(timeout / 1000)} 秒没有响应，请检查网络或接口地址`);
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求被中断，请重试');
+    throw new Error('连接不上接口：请检查接口地址与网络，并确认这个服务允许浏览器直接访问（跨域 CORS）');
+  }
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
     throw new Error(`服务返回 ${response.status}${detail ? `：${detail.slice(0, 180)}` : ''}`);
   }
   const result = await response.json();
-  const content = result?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) throw new Error('模型没有返回可读内容');
-  return content.trim();
+  const message = result?.choices?.[0]?.message;
+  if (typeof message?.content === 'string' && message.content.trim()) return message.content.trim();
+  // 推理模型有时只给 reasoning_content，content 是空的；这时要说清楚，而不是笼统地报“没有返回”。
+  if (typeof message?.reasoning_content === 'string' && message.reasoning_content.trim()) {
+    throw new Error('模型只返回了推理过程，没有给出回答；换一个非推理模型，或在这家服务里关闭思考模式再试');
+  }
+  throw new Error('模型没有返回可读内容');
 }
 
 /** 模型偶尔会带上代码块标记，解析前统一去掉。 */

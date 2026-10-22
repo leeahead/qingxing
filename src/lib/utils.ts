@@ -1,9 +1,9 @@
 // 纯函数工具：日期、id、本地存储键与界面用到的固定文案。
 // 这些函数不依赖 React，也不读写状态，方便单独复用和测试。
 
-import type { ObservationType } from './types';
+import type { ObservationType, Settings } from './types';
 
-export const VERSION = '5.1.1 · 记忆会自己长出来';
+export const VERSION = '5.1.2 · 模型配置不再丢';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -50,6 +50,30 @@ export const navItems: { id: 'now' | 'review' | 'ask'; label: string; icon: stri
   { id: 'review', label: '回看', icon: 'spark' },
   { id: 'ask', label: '提问', icon: 'chat' },
 ];
+
+const SETTING_TEXT_FIELDS = ['baseUrl', 'apiKey', 'model', 'embedModel'] as const;
+const SETTING_TIME_FIELDS = ['lastAutoObservationAt', 'lastAutoProfileAt', 'lastAutoDigestAt'] as const;
+
+/**
+ * 合并几处模型设置，按传入顺序取优先级：先出现的非空值胜出，后面只补空缺。
+ * 老设备的模型地址与密钥可能只写在其中一处（IndexedDB 主存或 localStorage 镜像），
+ * 直接整体覆盖会让已经配好的模型“凭空消失”，这就是空的那一边不能压过有值的那一边。
+ */
+export function mergeSettings(...sources: (Partial<Settings> | undefined | null)[]): Settings {
+  const merged: Settings = { baseUrl: '', apiKey: '', model: '' };
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of SETTING_TEXT_FIELDS) {
+      const value = source[key];
+      if (typeof value === 'string' && value.trim() && !merged[key]) merged[key] = value;
+    }
+    if (typeof source.autoPilot === 'boolean' && merged.autoPilot === undefined) merged.autoPilot = source.autoPilot;
+    for (const key of SETTING_TIME_FIELDS) {
+      if (source[key] && !merged[key]) merged[key] = source[key];
+    }
+  }
+  return merged;
+}
 
 export const confidenceLabels = { weak: '证据较弱', medium: '证据中等', strong: '证据较强' } as const;
 export const insightKindLabels = { repeat: '反复出现', change: '变化', tension: '矛盾', connection: '与过去相连', detail: '一个细节' } as const;

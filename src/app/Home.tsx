@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { termsFor } from '@/lib/topics';
 import type { ChatScope, DailySummary, DigestWeek, Entry, Judgment, MemoryDigest, Message, ProfileItem, ProfileKind, Settings, Store, Task, Theme, ThreadNote, View } from '@/lib/types';
-import { VERSION, addDays, dayOf, daysAgo, navItems, shortDate, streakOf, today, uid, weekStart } from '@/lib/utils';
+import { VERSION, addDays, dayOf, daysAgo, mergeSettings, navItems, shortDate, streakOf, today, uid, weekStart } from '@/lib/utils';
 import { buildChatRequest, buildDigestRequest, buildObservationRequest, buildProfileProposalRequest, buildRevisionRequest, buildSummaryRequest, buildThreadRequest, callModel, parseDigest, parseObservations, parseProfileProposal, parseRevision, parseSummary, parseThreadNote } from '@/lib/ai';
+import type { ChatTurn } from '@/lib/ai';
 import { backupFileName, buildBackupText, mergeStores, pickBackupDirectory, saveBackupFile, supportsAutoBackup, writeBackupToDirectory } from '@/lib/backup';
 import type { DirectoryHandleLike } from '@/lib/backup';
-import { appendJournal, clearStorage, clearVectors, createSnapshot, deleteSnapshot, deleteVectors, listJournal, listSnapshots, readBackupMeta, readDirectoryHandle, readMirrorState, readSnapshot, readState, readVectors, saveDirectoryHandle, storageStatus, writeBackupMeta, writeMirrorState, writeState, writeVectors } from '@/lib/storage';
+import { appendJournal, clearStorage, clearVectors, createSnapshot, deleteSnapshot, deleteVectors, findSettingsInSnapshots, listJournal, listSnapshots, readBackupMeta, readDirectoryHandle, readMirrorSettings, readMirrorState, readSnapshot, readState, readVectors, rescueSettingsOnce, saveDirectoryHandle, storageStatus, writeBackupMeta, writeMirrorState, writeState, writeVectors } from '@/lib/storage';
 import type { JournalEvent, JournalKind, Snapshot, StorageStatus, VectorRow } from '@/lib/storage';
 import { cosine, embedTexts, embeddingModel, probeEmbedding } from '@/lib/embedding';
 import type { EmbeddingProbe } from '@/lib/embedding';
@@ -60,6 +61,7 @@ export default function Home() {
   const [profileError, setProfileError] = useState('');
   const [backupMeta, setBackupMeta] = useState<{ lastExportAt?: string; lastExportCount?: number; autoDirName?: string; lastAutoAt?: string }>({});
   const [embedProbe, setEmbedProbe] = useState<EmbeddingProbe | null>(null);
+  const [modelError, setModelError] = useState('');
   const [vectorBusy, setVectorBusy] = useState(false);
   const [vectorCount, setVectorCount] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -86,6 +88,21 @@ export default function Home() {
   const { entries, tasks, judgments, summaries, digests, profile, threadNotes } = data;
   const modelReady = Boolean(settings.baseUrl.trim() && settings.model.trim());
 
+  /**
+   * 所有模型调用都从这里走：把最近一次失败的原因留下来，
+   * 设置页能直接看到“到底是没配上，还是配上了但接口报错”。
+   */
+  async function askModel(payload: ChatTurn[], timeout = 90000): Promise<string> {
+    try {
+      const answer = await callModel(settings, payload, timeout);
+      setModelError('');
+      return answer;
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : '未知错误');
+      throw error;
+    }
+  }
+
   // 读取本机数据：优先 IndexedDB（容量大得多），没有就退回旧的 localStorage 结构并顺手搬过去。
   useEffect(() => {
     let cancelled = false;
@@ -99,14 +116,25 @@ export default function Home() {
         const source = weight(stored) > 0 || weight(mirror) === 0 ? stored : mirror;
         if (cancelled) return;
         if (!source) { setReady(true); void refreshStorage(); return; }
+        // 模型设置可能只存在主存或镜像的一边（某次写入失败、或升级时只搬了一半）。
+        // 两边都读，空的那边不覆盖有值的那边——已经配好的模型不该“凭空消失”。
+        const merged = mergeSettings(source.settings, readMirrorSettings());
         setData(source.store);
-        setSettings({ ...blankSettings, ...source.settings });
+        setSettings(merged);
         setTheme(source.theme);
         setReady(true);
-        if (source !== stored) await writeState(source);   // 旧数据第一次进来：搬进主存储
+        if (source !== stored) await writeState({ ...source, settings: merged });   // 旧数据第一次进来：搬进主存储
         // 每天留一份快照：误操作（尤其是清空）能回滚。
         const existing = await listSnapshots();
-        if (!existing.length || dayOf(existing[0].at) !== today()) await createSnapshot(source, '每日快照');
+        if (!existing.length || dayOf(existing[0].at) !== today()) await createSnapshot({ ...source, settings: merged }, '每日快照');
+        // 两边都空了，说明配置在别处丢了：快照里还留着，自动找回一次并告诉用户。
+        if (!merged.baseUrl.trim()) {
+          const rescued = await rescueSettingsOnce();
+          if (rescued) {
+            setSettings(current => mergeSettings(rescued.settings, current));
+            setNotice(`模型连接配置丢了，已从 ${new Date(rescued.at).toLocaleDateString('zh-CN')} 的快照找回。`);
+          }
+        }
         setBackupMeta(readBackupMeta());
         setVectorCount((await readVectors()).size);
         void refreshStorage();
@@ -248,14 +276,27 @@ export default function Home() {
   async function restoreSnapshotById(id: string) {
     const snapshot = await readSnapshot(id);
     if (!snapshot) { setNotice('找不到这份快照。'); return; }
+    // 恢复的是记忆，不是模型连接：当前的配置优先，快照里的配置只补空缺。
+    const kept = mergeSettings(settings, snapshot.state.settings);
     setData(snapshot.state.store);
-    setSettings({ ...blankSettings, ...snapshot.state.settings });
+    setSettings(kept);
     setTheme(snapshot.state.theme);
-    writeMirrorState(snapshot.state);
-    await writeState(snapshot.state);
+    const restored = { ...snapshot.state, settings: kept };
+    writeMirrorState(restored);
+    await writeState(restored);
     await appendJournal('state.restored', `恢复到 ${new Date(snapshot.at).toLocaleString('zh-CN')} 的快照`);
     await refreshStorage();
     setNotice('已经回到那份快照的状态。');
+  }
+  /** 从最近的快照里把模型连接配置找回来（地址、密钥都在快照里）。 */
+  async function recoverSettings() {
+    const found = await findSettingsInSnapshots();
+    if (!found) { setNotice('这些快照里没有可用的模型连接配置。'); return; }
+    const found2 = mergeSettings(found.settings, settings);
+    setSettings(found2);
+    await writeState({ ...currentState(), settings: found2 });
+    writeMirrorState({ ...currentState(), settings: found2 });
+    setNotice(`已从 ${new Date(found.at).toLocaleString('zh-CN')} 的快照找回模型连接配置。`);
   }
   async function restoreDeletedEntry(entry: Entry) {
     setData(current => current.entries.some(item => item.id === entry.id) ? current : { ...current, entries: [...current.entries, entry] });
@@ -269,11 +310,16 @@ export default function Home() {
     setNotice('这份快照已删除。');
   }
   async function clearEverything() {
-    if (!window.confirm('确认清空本机全部记录、事项与判断？请先导出备份。')) return;
+    if (!window.confirm('确认清空本机全部记录、事项与判断？模型连接会保留，请先导出备份。')) return;
     await createSnapshot(currentState(), '清空前快照');
+    // 模型连接是配置，不是记忆：清空记忆不该让模型又变回“没连上”。
+    const kept = { ...settings };
     await clearStorage();
+    const emptied = { store: emptyStore, settings: kept, theme, updatedAt: new Date().toISOString() };
+    await writeState(emptied);
+    writeMirrorState(emptied);
     setData(emptyStore);
-    setSettings(blankSettings);
+    setSettings(kept);
     setMessages([]);
     // 备份元信息与向量计数都是“本机数据”的一部分，清空后要一起归零，
     // 否则界面会显示“上次备份是今天”“已有 N 条向量”这类不存在的事实。
@@ -281,7 +327,7 @@ export default function Home() {
     setVectorCount(0);
     setEmbedProbe(null);
     await refreshStorage();
-    setNotice('本机数据已清空。清空前留了一份快照，可以在设置里恢复。');
+    setNotice('本机数据已清空，模型连接保留。清空前留了一份快照，可以在设置里恢复。');
   }
 
   // ── 「关于你」档案块 ──
@@ -310,7 +356,7 @@ export default function Home() {
     const recent = [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 60);
     if (recent.length < 3) throw new Error('记录还太少，先记几天再让 AI 提议。');
     const allowedIds = new Set(recent.map(entry => entry.id));
-    const raw = await callModel(settings, buildProfileProposalRequest({ entries: recent, existing: profile }), 120000);
+    const raw = await askModel(buildProfileProposalRequest({ entries: recent, existing: profile }), 120000);
     const proposals = parseProfileProposal(raw, allowedIds).filter(item => !hasSimilarProfileText(profile, item.text));
     const now = new Date().toISOString();
     return proposals.map(item => ({ id: uid(), kind: item.kind, text: item.text, evidenceIds: item.evidenceIds, source: 'ai', confirmed: false, createdAt: now, updatedAt: now }));
@@ -383,7 +429,7 @@ export default function Home() {
     if (!modelReady) { setNotice('还没有连接模型。先填写接口地址与模型名。'); return; }
     setEmbedProbe(null);
     try {
-      const answer = await callModel(settings, [{ role: 'user', content: '回复两个字：可以' }], 30000);
+      const answer = await askModel([{ role: 'user', content: '回复两个字：可以' }], 30000);
       setNotice(`对话接口正常：${answer.slice(0, 20)}`);
     } catch (error) {
       setNotice(`对话接口失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -528,7 +574,7 @@ export default function Home() {
       const counter = item.counterIds.map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry));
       const since = item.lastReviewedAt || item.createdAt;
       const fresh = entries.filter(entry => entry.createdAt > since).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12);
-      const raw = await callModel(settings, buildRevisionRequest({ item, support, counter, corrections: item.corrections || [], fresh }), 90000);
+      const raw = await askModel(buildRevisionRequest({ item, support, counter, corrections: item.corrections || [], fresh }), 90000);
       const revised = parseRevision(raw, item);
       const now = new Date().toISOString();
       const currentVersion = item.version || 1;
@@ -553,7 +599,7 @@ export default function Home() {
     const recentTerms = new Set(scope.flatMap(entry => termsFor(entry.content)));
     const counterPool = entries.filter(entry => !scopeIds.has(entry.id)).map(entry => ({ entry, score: termsFor(entry.content).filter(term => recentTerms.has(term)).length })).filter(item => item.score > 0).sort((a, b) => b.score - a.score || b.entry.createdAt.localeCompare(a.entry.createdAt)).slice(0, 8).map(item => item.entry);
     const allowedIds = new Set([...scope.map(entry => entry.id), ...counterPool.map(entry => entry.id), ...latestDigests.flatMap(item => item.evidence.map(evidence => evidence.id))]);
-    const raw = await callModel(settings, buildObservationRequest({ scope, counterPool, digests: latestDigests, judgments, profile, threads, recentSummaries: summaries.slice(-3) }), 120000);
+    const raw = await askModel(buildObservationRequest({ scope, counterPool, digests: latestDigests, judgments, profile, threads, recentSummaries: summaries.slice(-3) }), 120000);
     return parseObservations(raw, { allowedIds, entries, existingTopics: judgments.map(item => item.topic) });
   }
   async function generateObservations() {
@@ -572,7 +618,7 @@ export default function Home() {
   async function digestWeek(week: DigestWeek, known: MemoryDigest[]) {
     setDigestProgress(`正在沉淀 ${shortDate(week.start)}–${shortDate(week.end)}…`);
     const previous = known.filter(item => item.end < week.start).sort((a, b) => a.end.localeCompare(b.end)).at(-1);
-    const raw = await callModel(settings, buildDigestRequest(week, previous, judgments.filter(item => item.status === 'confirmed'), profile, threads), 120000);
+    const raw = await askModel(buildDigestRequest(week, previous, judgments.filter(item => item.status === 'confirmed'), profile, threads), 120000);
     return parseDigest(raw, week, settings.model);
   }
   function digestErrorText(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
@@ -672,7 +718,7 @@ export default function Home() {
         setMessages(current => [...current, { role: 'assistant', content: sources.length ? `找到 ${sources.length} 条可能相关的原始记录。当前是本地检索模式，只展示原文，不作推断。在“偏好与数据”中连接模型后，可以进行真正的分析。` : '暂未找到相关记录。可以补充人物、主题或具体事件；连接模型后也可以直接提问。', sources: useEntries ? sources : [] }]);
         return;
       }
-      const answer = await callModel(settings, buildChatRequest({ question, scope: chatScope, sources, confirmed: confirmedJudgments, history: messages.map(({ role, content }) => ({ role, content })), profile, digests: latestDigests, threadNotes, recentSummaries: summaries.slice(-2), threads: matchedThreads.length ? matchedThreads : threads }), 120000);
+      const answer = await askModel(buildChatRequest({ question, scope: chatScope, sources, confirmed: confirmedJudgments, history: messages.map(({ role, content }) => ({ role, content })), profile, digests: latestDigests, threadNotes, recentSummaries: summaries.slice(-2), threads: matchedThreads.length ? matchedThreads : threads }), 120000);
       setMessages(current => [...current, { role: 'assistant', content: answer, sources: useEntries ? sources : [] }]);
     } catch (error) {
       setMessages(current => [...current, { role: 'assistant', content: `这次请求没有完成：${error instanceof Error ? error.message : '未知错误'}。请检查接口地址、访问密钥、模型名称，以及接口是否允许浏览器跨域访问。原始记录没有受到影响。` }]);
@@ -685,7 +731,7 @@ export default function Home() {
     if (!modelReady) throw new Error('还没有连接模型。请在“偏好与数据”中填写接口地址、模型名称和访问密钥。');
     const earlier = entries.filter(entry => dayOf(entry.createdAt) < day).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 25);
     const previous = [...summaries].filter(item => item.day < day).sort((a, b) => a.day.localeCompare(b.day)).at(-1);
-    const raw = await callModel(settings, buildSummaryRequest(day, dayEntries, earlier, { profile, threads, previous, digests: latestDigests.slice(-2) }), 120000);
+    const raw = await askModel(buildSummaryRequest(day, dayEntries, earlier, { profile, threads, previous, digests: latestDigests.slice(-2) }), 120000);
     return parseSummary(raw, day, dayEntries, settings.model);
   }
   async function generateSummary(day: string) {
@@ -719,7 +765,7 @@ export default function Home() {
     if (!modelReady) { setThreadError('还没有连接模型。请在“偏好与数据”里填写接口地址、模型名称和访问密钥。'); return; }
     setThreadBusy(true); setThreadError('');
     try {
-      const raw = await callModel(settings, buildThreadRequest(topic, list, profile), 120000);
+      const raw = await askModel(buildThreadRequest(topic, list, profile), 120000);
       const note = parseThreadNote(raw, topic, list, settings.model);
       setData(current => ({ ...current, threadNotes: [...current.threadNotes.filter(item => item.topic !== topic), note] }));
       logEvent('summary.generated', `把「${topic}」这条线索串了起来`);
@@ -891,14 +937,14 @@ export default function Home() {
       onClose={() => setShowDigests(false)}
     />}
     {showSettings && <SettingsModal
-      settings={settings} setSettings={update => setSettings(update)} theme={theme} setTheme={setTheme}
+      settings={settings} setSettings={update => { setModelError(''); setSettings(update); }} theme={theme} setTheme={setTheme}
       backupMeta={backupMeta} backupText={backupText} supportsAuto={supportsAutoBackup()}
       onExport={() => void exportData()} onOpenImport={() => { setShowSettings(false); setImportOpen(true); }}
       onAuthorizeDir={() => void authorizeAutoBackup()} onRunAutoBackup={() => void runAutoBackup()}
       storageInfo={storageInfo} snapshots={snapshots} journal={journal}
       onSnapshot={() => void takeSnapshot('手动快照')} onRestoreSnapshot={id => void restoreSnapshotById(id)} onRemoveSnapshot={id => void removeSnapshot(id)}
       onRestoreEntry={entry => void restoreDeletedEntry(entry)} onClearAll={() => void clearEverything()}
-      onTestConnection={() => void testConnection()} embedProbe={embedProbe}
+      onTestConnection={() => void testConnection()} onRecoverSettings={() => void recoverSettings()} modelError={modelError} embedProbe={embedProbe}
       vectorBusy={vectorBusy} vectorCount={vectorCount} entriesCount={entries.length} onBuildVectors={() => void buildVectors()}
       autoBusy={autoBusy} onRunAutoPilot={() => void runAutoPilot()}
       keyboardDiag={keyboardDiag} onClose={() => setShowSettings(false)}
