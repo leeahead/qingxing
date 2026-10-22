@@ -3,7 +3,7 @@
 
 import type { ObservationType } from './types';
 
-export const VERSION = '4.5.1 · 备份可信与向量可用';
+export const VERSION = '5.1 · 记忆会自己长出来';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -13,10 +13,11 @@ export const keys = {
   summaries: 'qingxing.summaries.v1',
   digests: 'qingxing.digests.v1',
   profile: 'qingxing.profile.v1',
+  threadNotes: 'qingxing.thread-notes.v1',
 };
 
 /** 备份文件的 schema 版本；新增数据结构时要一起升级并兼容旧备份。 */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 export const dayOf = (value: string | Date) => new Date(value).toLocaleDateString('sv-SE');
 export const today = () => dayOf(new Date());
@@ -29,16 +30,30 @@ export const validDate = (value: unknown): value is string => typeof value === '
 /** 所在自然周的周一（以 sv-SE 的 yyyy-mm-dd 表示）。 */
 export const weekStart = (value: string) => { const d = new Date(`${dayOf(value)}T12:00:00`); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return dayOf(d); };
 export const addDays = (value: string, days: number) => { const d = new Date(`${value}T12:00:00`); d.setDate(d.getDate() + days); return dayOf(d); };
+/** 距今天数（0 = 今天）。 */
+export const daysAgo = (value: string) => Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 86400000));
 
-export const navItems: { id: 'home' | 'memory' | 'judgments' | 'chat' | 'tasks'; label: string; icon: string }[] = [
-  { id: 'home', label: '今天', icon: 'home' },
-  { id: 'memory', label: '记忆', icon: 'calendar' },
-  { id: 'judgments', label: '判断', icon: 'spark' },
-  { id: 'chat', label: '提问', icon: 'chat' },
-  { id: 'tasks', label: '事项', icon: 'check' },
+/**
+ * 连续有记录的天数。今天还没记时从昨天起算——
+ * 白天打开应用不应该看到自己的连续天数已经断了。
+ */
+export function streakOf(counts: Map<string, number>): number {
+  let cursor = today();
+  if (!counts.get(cursor)) cursor = addDays(cursor, -1);
+  let streak = 0;
+  while (counts.get(cursor)) { streak++; cursor = addDays(cursor, -1); }
+  return streak;
+}
+
+export const navItems: { id: 'now' | 'review' | 'ask'; label: string; icon: string }[] = [
+  { id: 'now', label: '记录', icon: 'edit' },
+  { id: 'review', label: '回看', icon: 'spark' },
+  { id: 'ask', label: '提问', icon: 'chat' },
 ];
 
 export const confidenceLabels = { weak: '证据较弱', medium: '证据中等', strong: '证据较强' } as const;
+export const insightKindLabels = { repeat: '反复出现', change: '变化', tension: '矛盾', connection: '与过去相连', detail: '一个细节' } as const;
+export const threadTrendLabels = { up: '最近更频繁', down: '最近变少', flat: '一直没断' } as const;
 export const observationTypeLabels: Record<ObservationType, string> = { pattern: '模式', change: '变化', tension: '矛盾', question: '问题', hypothesis: '假设' };
 export const profileKindLabels = { identity: '我是谁', value: '我在意的事', person: '重要的人', focus: '眼下的焦点' } as const;
 export const judgmentStatusLabels = { candidate: '待核对', confirmed: '已确认', uncertain: '暂不确定', withdrawn: '已撤回' } as const;

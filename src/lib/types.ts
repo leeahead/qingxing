@@ -30,15 +30,35 @@ export type Judgment = {
   createdAt: string;
   updatedAt: string;
 };
-export type Settings = { baseUrl: string; apiKey: string; model: string; embedModel?: string };
+export type Settings = {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  embedModel?: string;
+  /** 默认开启；关掉后所有整理都要手动触发 */
+  autoPilot?: boolean;
+  lastAutoObservationAt?: string;
+  lastAutoProfileAt?: string;
+  lastAutoDigestAt?: string;
+};
+/** 每日回望里的一条「值得注意」；必须挂真实记录 id，挂不上在解析层就被丢弃。 */
+export type SummaryInsightKind = 'repeat' | 'change' | 'tension' | 'connection' | 'detail';
+export type SummaryInsight = { text: string; sourceIds: string[]; kind?: SummaryInsightKind };
 export type DailySummary = {
   day: string;
+  /** 4–12 个字的小标题，来自当天的具体内容 */
+  title?: string;
   overview?: string;
-  repeated: string;
-  unresolved: string;
-  connections: string;
-  emotion: string;
-  tomorrow: string;
+  /** v5 起的回望结构；旧总结没有这个字段 */
+  insights?: SummaryInsight[];
+  /** 一个从当天记录里长出来、值得继续想的问题 */
+  question?: string;
+  /** 以下为 v4 五栏结构的遗留字段；旧数据照常显示，新总结不再生成 repeated/connections/emotion */
+  repeated?: string;
+  unresolved?: string;
+  connections?: string;
+  emotion?: string;
+  tomorrow?: string;
   generatedAt: string;
   model: string;
   entryCount: number;
@@ -49,11 +69,30 @@ export type MemoryDigest = {
   id: string;
   start: string;
   end: string;
+  /** 这一周的一句话记忆 */
+  title?: string;
   summary: string;
   themes: string[];
   changes: string;
   contradictions: string;
+  /** 下周值得留意的一个具体问题 */
+  watch?: string;
   evidence: MemoryEvidence[];
+  entryCount: number;
+  generatedAt: string;
+  model: string;
+};
+/**
+ * 一条「线索」被 AI 按时间串起来之后的笔记。
+ * 线索本身（哪些词、哪些记录）每次由本地重新计算，笔记只按 topic 缓存。
+ */
+export type ThreadNote = {
+  id: string;
+  topic: string;
+  summary: string;
+  turning?: string;
+  openQuestion?: string;
+  sourceIds: string[];
   entryCount: number;
   generatedAt: string;
   model: string;
@@ -87,7 +126,7 @@ export type BackupMeta = {
 /** 一个已结束、有记录的自然周（周一到周日），用于沉淀长期记忆。 */
 export type DigestWeek = { start: string; end: string; entries: Entry[] };
 export type ChatScope = 'all' | 'entries' | 'judgments';
-export type Store = { entries: Entry[]; tasks: Task[]; judgments: Judgment[]; memoryFeedback: Record<string, string>; summaries: DailySummary[]; digests: MemoryDigest[]; profile: ProfileItem[] };
+export type Store = { entries: Entry[]; tasks: Task[]; judgments: Judgment[]; memoryFeedback: Record<string, string>; summaries: DailySummary[]; digests: MemoryDigest[]; profile: ProfileItem[]; threadNotes: ThreadNote[] };
 export type Theme = 'dark' | 'light';
-export type View = 'home' | 'memory' | 'judgments' | 'chat' | 'tasks';
+export type View = 'now' | 'review' | 'ask';
 export type Message = { role: 'user' | 'assistant'; content: string; sources?: Entry[] };

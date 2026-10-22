@@ -138,6 +138,7 @@ export function readMirrorState(): PersistedState | null {
     if (!Array.isArray(loaded.summaries)) loaded.summaries = [];
     if (!Array.isArray(loaded.digests)) loaded.digests = [];
     if (!Array.isArray(loaded.profile)) loaded.profile = [];
+    if (!Array.isArray(loaded.threadNotes)) loaded.threadNotes = [];
     const settings = { baseUrl: '', apiKey: '', model: '', ...JSON.parse(localStorage.getItem('qingxing.settings.v1') || '{}') } as Settings;
     const savedTheme = localStorage.getItem('qingxing.theme.v1');
     const theme: Theme = savedTheme === 'light' || savedTheme === 'mono' ? 'light' : 'dark';

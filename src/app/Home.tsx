@@ -1,30 +1,33 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { repeatedTopics, termsFor } from '@/lib/topics';
-import type { ChatScope, DigestWeek, Entry, Judgment, MemoryDigest, Message, ProfileItem, ProfileKind, Settings, Store, Task, Theme, View } from '@/lib/types';
-import { VERSION, addDays, confidenceLabels, correctionReasons, dateLabel, dayOf, judgmentStatusLabels, navItems, observationTypeLabels, profileKindLabels, shortDate, timeOf, today, uid, weekStart } from '@/lib/utils';
-import { buildChatRequest, buildDigestRequest, buildObservationRequest, buildProfileProposalRequest, buildRevisionRequest, buildSummaryRequest, callModel, parseDigest, parseObservations, parseProfileProposal, parseRevision, parseSummary } from '@/lib/ai';
-import { autoBackupFileName, backupFileName, buildBackupText, mergeStores, parseBackupText, pickBackupDirectory, saveBackupFile, supportsAutoBackup, writeBackupToDirectory } from '@/lib/backup';
+import { termsFor } from '@/lib/topics';
+import type { ChatScope, DailySummary, DigestWeek, Entry, Judgment, MemoryDigest, Message, ProfileItem, ProfileKind, Settings, Store, Task, Theme, ThreadNote, View } from '@/lib/types';
+import { VERSION, addDays, dayOf, daysAgo, navItems, shortDate, streakOf, today, uid, weekStart } from '@/lib/utils';
+import { buildChatRequest, buildDigestRequest, buildObservationRequest, buildProfileProposalRequest, buildRevisionRequest, buildSummaryRequest, buildThreadRequest, callModel, parseDigest, parseObservations, parseProfileProposal, parseRevision, parseSummary, parseThreadNote } from '@/lib/ai';
+import { backupFileName, buildBackupText, mergeStores, pickBackupDirectory, saveBackupFile, supportsAutoBackup, writeBackupToDirectory } from '@/lib/backup';
 import type { DirectoryHandleLike } from '@/lib/backup';
 import { appendJournal, clearStorage, clearVectors, createSnapshot, deleteSnapshot, deleteVectors, listJournal, listSnapshots, readBackupMeta, readDirectoryHandle, readMirrorState, readSnapshot, readState, readVectors, saveDirectoryHandle, storageStatus, writeBackupMeta, writeMirrorState, writeState, writeVectors } from '@/lib/storage';
 import type { JournalEvent, JournalKind, Snapshot, StorageStatus, VectorRow } from '@/lib/storage';
 import { cosine, embedTexts, embeddingModel, probeEmbedding } from '@/lib/embedding';
 import type { EmbeddingProbe } from '@/lib/embedding';
 import { hasSimilarProfileText } from '@/lib/profile';
+import { buildThreads, memoriesOnThisDay, threadForEntry } from '@/lib/threads';
 import { isInputField, watchKeyboard } from '@/lib/keyboard';
 import type { KeyboardDiag } from '@/lib/keyboard';
-import { EntryCard } from '@/components/EntryCard';
+import type { EntryEcho } from '@/components/EntryCard';
 import { Icon } from '@/components/Icon';
-import { Modal } from '@/components/Modal';
 import { ProfileModal } from '@/components/ProfileModal';
-import { HomeView } from '@/components/views/HomeView';
-import { MemoryView } from '@/components/views/MemoryView';
-import { JudgmentsView } from '@/components/views/JudgmentsView';
-import { ChatView } from '@/components/views/ChatView';
-import { TasksView } from '@/components/views/TasksView';
+import { DigestModal } from '@/components/modals/DigestModal';
+import { EntryModal } from '@/components/modals/EntryModal';
+import { ImportModal } from '@/components/modals/ImportModal';
+import { ObservationModal } from '@/components/modals/ObservationModal';
+import { SettingsModal } from '@/components/modals/SettingsModal';
+import { NowView } from '@/components/views/NowView';
+import { ReviewView } from '@/components/views/ReviewView';
+import { AskView } from '@/components/views/AskView';
 
-const emptyStore: Store = { entries: [], tasks: [], judgments: [], memoryFeedback: {}, summaries: [], digests: [], profile: [] };
+const emptyStore: Store = { entries: [], tasks: [], judgments: [], memoryFeedback: {}, summaries: [], digests: [], profile: [], threadNotes: [] };
 const blankSettings: Settings = { baseUrl: '', apiKey: '', model: '' };
 /** 设置里最多保留多少条键盘诊断记录；真机排查用，平时不打扰。 */
 const DIAG_LIMIT = 8;
@@ -34,22 +37,16 @@ export default function Home() {
   const [settings, setSettings] = useState<Settings>(blankSettings);
   const [theme, setTheme] = useState<Theme>('dark');
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<View>('home');
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const [month, setMonth] = useState(today().slice(0, 7));
+  const [view, setView] = useState<View>('now');
+  const [reviewTab, setReviewTab] = useState<'main' | 'timeline'>('main');
+  const [focusDay, setFocusDay] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState<Entry | null>(null);
-  const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [showSummary, setShowSummary] = useState(false);
   const [actionEntry, setActionEntry] = useState<Entry | null>(null);
   const [taskTitle, setTaskTitle] = useState('');
-  const [pendingDelete, setPendingDelete] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [pasteBackup, setPasteBackup] = useState('');
-  const [importPreview, setImportPreview] = useState<(Store & { skipped: number }) | null>(null);
-  const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge');
   const [backupText, setBackupText] = useState('');
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -75,21 +72,19 @@ export default function Home() {
   const [digestBusy, setDigestBusy] = useState(false);
   const [digestError, setDigestError] = useState('');
   const [digestProgress, setDigestProgress] = useState('');
-  const [redigestPending, setRedigestPending] = useState<string | null>(null);
-  const [removeDigestPending, setRemoveDigestPending] = useState<string | null>(null);
   const [detailJudgment, setDetailJudgment] = useState<Judgment | null>(null);
-  const [observationFilter, setObservationFilter] = useState<'all' | 'candidate' | 'review' | 'confirmed' | 'archived'>('all');
-  const [correcting, setCorrecting] = useState(false);
-  const [correctionReason, setCorrectionReason] = useState('');
-  const [correctionNote, setCorrectionNote] = useState('');
-  const [editingObservation, setEditingObservation] = useState<{ topic: string; statement: string } | null>(null);
-  const [observationEditError, setObservationEditError] = useState('');
   const [revisionBusy, setRevisionBusy] = useState(false);
   const [revisionError, setRevisionError] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [focusThread, setFocusThread] = useState<string | null>(null);
+  const [threadBusy, setThreadBusy] = useState(false);
+  const [threadError, setThreadError] = useState('');
+  const [autoBusy, setAutoBusy] = useState(false);
+  const autoRanRef = useRef(false);
+  const autoVectorRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const { entries, tasks, judgments, summaries, digests, profile } = data;
+  const { entries, tasks, judgments, summaries, digests, profile, threadNotes } = data;
+  const modelReady = Boolean(settings.baseUrl.trim() && settings.model.trim());
 
   // 读取本机数据：优先 IndexedDB（容量大得多），没有就退回旧的 localStorage 结构并顺手搬过去。
   useEffect(() => {
@@ -153,7 +148,7 @@ export default function Home() {
     })();
   }, []);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 6500); return () => clearTimeout(timer); }, [notice]);
-  useEffect(() => { if (view !== 'chat') return; const frame = requestAnimationFrame(() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: busy ? 'smooth' : 'auto' }); }); return () => cancelAnimationFrame(frame); }, [messages, busy, view]);
+  useEffect(() => { if (view !== 'ask') return; const frame = requestAnimationFrame(() => { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: busy ? 'smooth' : 'auto' }); }); return () => cancelAnimationFrame(frame); }, [messages, busy, view]);
   // 软键盘与底部导航：键盘收起时输入框常还留着焦点，CSS 兜底会把底栏一直藏住。
   // 这里在确认键盘确实收起时让输入框失焦，底栏随之恢复，不需要用户再点一下屏幕。
   useEffect(() => watchKeyboard({
@@ -169,32 +164,71 @@ export default function Home() {
   // 打开「偏好与数据」时刷新一次存储状态、快照与操作记录。
   useEffect(() => { if (showSettings) void refreshStorage(); }, [showSettings]);
 
+  // 自动整理：每次打开最多跑一轮。所有结果都仍是候选或可重做的整理，不会替用户下结论。
+  useEffect(() => {
+    if (!ready || !modelReady || settings.autoPilot === false || autoRanRef.current) return;
+    const sessionKey = 'qingxing.autopilot.v1';
+    try {
+      if (sessionStorage.getItem(sessionKey) === '1') { autoRanRef.current = true; return; }
+      sessionStorage.setItem(sessionKey, '1');
+    } catch { /* 隐私模式没有 sessionStorage，照常跑一次 */ }
+    autoRanRef.current = true;
+    void runAutoPilot();
+  }, [ready, modelReady, settings.autoPilot]);
+
+  // 自动补向量：只在用户填了「向量模型」时进行；失败就安静地退回关键词检索。
+  useEffect(() => {
+    if (!ready || !settings.embedModel?.trim() || !entries.length) return;
+    const timer = setTimeout(() => void autoIndexVectors(), 9000);
+    return () => clearTimeout(timer);
+  }, [ready, settings.embedModel, entries.length]);
+
   const counts = useMemo(() => { const map = new Map<string, number>(); for (const entry of entries) { const day = dayOf(entry.createdAt); map.set(day, (map.get(day) || 0) + 1); } return map; }, [entries]);
-  const todaysEntries = entries.filter(entry => dayOf(entry.createdAt) === today()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const activeTasks = tasks.filter(task => task.status === 'open' || task.status === 'deferred');
-  const topics = useMemo(() => repeatedTopics(entries, 2), [entries]);
+  const todaysEntries = useMemo(() => entries.filter(entry => dayOf(entry.createdAt) === today()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [entries]);
+  const streak = useMemo(() => streakOf(counts), [counts]);
+  const activeTasks = useMemo(() => tasks.filter(task => task.status === 'open' || task.status === 'deferred'), [tasks]);
   const observationScope = useMemo(() => { const cutoff = Date.now() - 30 * 86400000; return entries.filter(entry => Date.parse(entry.createdAt) >= cutoff).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 60); }, [entries]);
   const digestWeeks = useMemo(() => { const map = new Map<string, Entry[]>(); for (const entry of entries) { const start = weekStart(entry.createdAt); const list = map.get(start) || []; list.push(entry); map.set(start, list); } return [...map.entries()].map(([start, list]) => ({ start, end: addDays(start, 6), entries: list.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) })).filter(week => week.end < today()).sort((a, b) => a.start.localeCompare(b.start)); }, [entries]);
   const coveredWeeks = useMemo(() => new Set(digests.map(item => item.start)), [digests]);
   const uncoveredWeeks = useMemo(() => digestWeeks.filter(week => !coveredWeeks.has(week.start)), [digestWeeks, coveredWeeks]);
   const nextDigestBatch = uncoveredWeeks.slice(0, 3);
   const digestEntryCount = nextDigestBatch.reduce((sum, week) => sum + week.entries.length, 0);
-  const sortedDigests = useMemo(() => [...digests].sort((a, b) => b.start.localeCompare(a.start)), [digests]);
   // 一段长期记忆是否已经和本周原文对不上：记录被增删改、或上一次沉淀只读到部分记录（上限 100 条）。
   const digestFreshness = useMemo(() => { const map = new Map<string, string>(); for (const item of digests) { const week = digestWeeks.find(entry => entry.start === item.start); if (!week || !week.entries.length) { map.set(item.id, '这一周已经没有记录了'); continue; } const changed = week.entries.some(entry => entry.createdAt > item.generatedAt || entry.updatedAt > item.generatedAt); if (changed || week.entries.length !== item.entryCount) map.set(item.id, '这一周的原文有变化，可能已经对不上'); } return map; }, [digests, digestWeeks]);
   const latestDigests = useMemo(() => [...digests].sort((a, b) => a.start.localeCompare(b.start)).slice(-24), [digests]);
+  /** 本地记忆脉络：反复出现的话题，不需要 AI，也不花 token。 */
+  const threads = useMemo(() => buildThreads(entries), [entries]);
+  const thisDay = useMemo(() => memoriesOnThisDay(entries, today()), [entries]);
   const observationReviewFlags = useMemo(() => { const map = new Map<string, boolean>(); for (const item of judgments) { if (item.status === 'withdrawn' || item.muted) { map.set(item.id, false); continue; } const due = item.nextReviewAt ? item.nextReviewAt <= today() : addDays(dayOf(item.createdAt), 21) <= today(); let fresh = false; if (!due) { const terms = new Set(termsFor(`${item.topic} ${item.statement}`)); const since = item.lastReviewedAt || item.createdAt; fresh = entries.some(entry => entry.createdAt > since && termsFor(entry.content).some(term => terms.has(term))); } map.set(item.id, due || fresh); } return map; }, [judgments, entries]);
-  const observationStats = useMemo(() => ({ candidate: judgments.filter(item => item.status === 'candidate').length, confirmed: judgments.filter(item => item.status === 'confirmed').length, review: judgments.filter(item => observationReviewFlags.get(item.id)).length, archived: judgments.filter(item => item.status === 'withdrawn' || item.muted).length, active: judgments.filter(item => item.status !== 'withdrawn' && !item.muted).length }), [judgments, observationReviewFlags]);
-  const visibleJudgments = useMemo(() => { const list = judgments.filter(item => { if (observationFilter === 'all') return true; if (observationFilter === 'candidate') return item.status === 'candidate'; if (observationFilter === 'confirmed') return item.status === 'confirmed'; if (observationFilter === 'archived') return item.status === 'withdrawn' || !!item.muted; return observationReviewFlags.get(item.id) === true; }); return [...list].sort((a, b) => Number(observationReviewFlags.get(b.id) || 0) - Number(observationReviewFlags.get(a.id) || 0) || b.updatedAt.localeCompare(a.updatedAt)); }, [judgments, observationFilter, observationReviewFlags]);
-  const dayTopics = useMemo(() => repeatedTopics(todaysEntries), [todaysEntries]);
-  const historicalEcho = entries.filter(entry => dayOf(entry.createdAt) !== today()).map(entry => ({ entry, overlap: termsFor(entry.content).filter(term => todaysEntries.some(current => termsFor(current.content).includes(term))) })).filter(item => item.overlap.length >= 2).sort((a, b) => b.overlap.length - a.overlap.length).slice(0, 2);
-  const selectedEntries = entries.filter(entry => selectedDay && dayOf(entry.createdAt) === selectedDay).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  /**
+   * 即时回响：今天每条记录找一条最相关的历史记录（分词交集 ≥ 2）。
+   * 全部在本地算，不等 AI、不花 token；这是「记完立刻有价值」的最小闭环。
+   */
+  const echoes = useMemo(() => {
+    const map = new Map<string, EntryEcho>();
+    if (!todaysEntries.length) return map;
+    const past = entries.filter(entry => dayOf(entry.createdAt) !== today()).map(entry => ({ entry, terms: new Set(termsFor(entry.content)) }));
+    for (const item of todaysEntries) {
+      const terms = termsFor(item.content);
+      if (terms.length < 2) continue;
+      let best: Entry | null = null;
+      let bestScore = 1;
+      for (const candidate of past) {
+        let score = 0;
+        for (const term of terms) if (candidate.terms.has(term)) score++;
+        if (score >= 2 && (score > bestScore || (score === bestScore && best && candidate.entry.createdAt > best.createdAt))) { best = candidate.entry; bestScore = score; }
+      }
+      if (best) map.set(item.id, { entry: best, overlap: bestScore, thread: threadForEntry(item, threads)?.topic });
+    }
+    return map;
+  }, [entries, todaysEntries, threads]);
   const summaryFor = (day: string) => summaries.find(item => item.day === day);
   const confirmedJudgments = judgments.filter(item => item.status === 'confirmed');
-  const modelReady = Boolean(settings.baseUrl.trim() && settings.model.trim());
-  const searchResults = entries.filter(entry => entry.content.toLowerCase().includes(query.trim().toLowerCase())).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const calendar = useMemo(() => { const [year, number] = month.split('-').map(Number); const first = (new Date(year, number - 1, 1).getDay() + 6) % 7; return [...Array(first).fill(null), ...Array.from({ length: new Date(year, number, 0).getDate() }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`)] as (string | null)[]; }, [month]);
-  const heatDays = useMemo(() => { const start = new Date(`${today()}T12:00:00`); start.setDate(start.getDate() - 97); return Array.from({ length: 98 }, (_, i) => { const day = new Date(start); day.setDate(day.getDate() + i); return dayOf(day); }); }, []);
+  const backupAgeDays = useMemo(() => {
+    if (!backupMeta.lastExportAt) return null;
+    const days = Math.floor((Date.now() - Date.parse(backupMeta.lastExportAt)) / 86400000);
+    return Number.isFinite(days) ? days : null;
+  }, [backupMeta.lastExportAt]);
 
   // ── 存储：状态刷新、操作日志、快照与恢复 ──
   const currentState = () => ({ store: data, settings, theme, updatedAt: new Date().toISOString() });
@@ -235,6 +269,7 @@ export default function Home() {
     setNotice('这份快照已删除。');
   }
   async function clearEverything() {
+    if (!window.confirm('确认清空本机全部记录、事项与判断？请先导出备份。')) return;
     await createSnapshot(currentState(), '清空前快照');
     await clearStorage();
     setData(emptyStore);
@@ -246,7 +281,7 @@ export default function Home() {
     setVectorCount(0);
     setEmbedProbe(null);
     await refreshStorage();
-    setNotice('本机数据已清空。清空前留了一份快照，可以在下面恢复。');
+    setNotice('本机数据已清空。清空前留了一份快照，可以在设置里恢复。');
   }
 
   // ── 「关于你」档案块 ──
@@ -255,7 +290,7 @@ export default function Home() {
     const now = new Date().toISOString();
     const item: ProfileItem = { id: uid(), kind, text: text.trim().slice(0, 120), evidenceIds: [], source: 'user', confirmed: true, createdAt: now, updatedAt: now };
     setData(current => ({ ...current, profile: [...current.profile, item] }));
-    logEvent('profile.updated', `写了一条${profileKindLabels[kind]}：${item.text.slice(0, 16)}`);
+    logEvent('profile.updated', `写了一条档案：${item.text.slice(0, 16)}`);
   }
   function updateProfileItem(id: string, text: string) {
     setData(current => ({ ...current, profile: current.profile.map(item => item.id === id ? { ...item, text: text.trim().slice(0, 120), updatedAt: new Date().toISOString() } : item) }));
@@ -269,19 +304,23 @@ export default function Home() {
     setData(current => ({ ...current, profile: current.profile.map(item => item.id === id ? { ...item, confirmed: true, updatedAt: new Date().toISOString() } : item) }));
     logEvent('profile.updated', '确认了一条档案');
   }
+  async function createProfileProposals(): Promise<ProfileItem[]> {
+    if (!modelReady) throw new Error('还没有连接模型。先在“偏好与数据”里填写接口地址与模型。');
+    // 取最近的 60 条；entries 是按写入顺序追加的，不能直接 slice(0, 60)。
+    const recent = [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 60);
+    if (recent.length < 3) throw new Error('记录还太少，先记几天再让 AI 提议。');
+    const allowedIds = new Set(recent.map(entry => entry.id));
+    const raw = await callModel(settings, buildProfileProposalRequest({ entries: recent, existing: profile }), 120000);
+    const proposals = parseProfileProposal(raw, allowedIds).filter(item => !hasSimilarProfileText(profile, item.text));
+    const now = new Date().toISOString();
+    return proposals.map(item => ({ id: uid(), kind: item.kind, text: item.text, evidenceIds: item.evidenceIds, source: 'ai', confirmed: false, createdAt: now, updatedAt: now }));
+  }
   async function proposeProfile() {
     if (profileBusy) return;
-    if (!modelReady) { setProfileError('还没有连接模型。先在“偏好与数据”里填写接口地址与模型。'); return; }
     setProfileBusy(true); setProfileError('');
     try {
-      const recent = entries.slice(0, 60);
-      if (recent.length < 3) { setProfileError('记录还太少，先记几天再让 AI 提议。'); return; }
-      const allowedIds = new Set(recent.map(entry => entry.id));
-      const raw = await callModel(settings, buildProfileProposalRequest({ entries: recent, existing: profile }), 120000);
-      const proposals = parseProfileProposal(raw, allowedIds).filter(item => !hasSimilarProfileText(profile, item.text));
-      if (!proposals.length) { setProfileError('这次没有找到足够有把握的背景条目。可以自己写。'); return; }
-      const now = new Date().toISOString();
-      const items: ProfileItem[] = proposals.map(item => ({ id: uid(), kind: item.kind, text: item.text, evidenceIds: item.evidenceIds, source: 'ai', confirmed: false, createdAt: now, updatedAt: now }));
+      const items = await createProfileProposals();
+      if (!items.length) { setProfileError('这次没有找到足够有把握的背景条目。可以自己写。'); return; }
       setData(current => ({ ...current, profile: [...current.profile, ...items] }));
       setNotice(`AI 提议了 ${items.length} 条，你确认后才会生效。`);
     } catch (error) {
@@ -332,12 +371,6 @@ export default function Home() {
       setNotice(error instanceof Error ? error.message : '没有拿到目录授权。');
     }
   }
-  /** 距离上次把数据带出设备过了多少天（没备份过返回 null）。 */
-  const backupAgeDays = useMemo(() => {
-    if (!backupMeta.lastExportAt) return null;
-    const days = Math.floor((Date.now() - Date.parse(backupMeta.lastExportAt)) / 86400000);
-    return Number.isFinite(days) ? days : null;
-  }, [backupMeta.lastExportAt]);
 
   // ── 语义向量 ──
   /** 记录被改或被删时，旧向量必须一起丢掉，否则语义召回会按旧内容命中。 */
@@ -396,15 +429,55 @@ export default function Home() {
       return [];
     }
   }
+  /**
+   * 全站统一的混合检索：字面命中 > 分词交集 > 语义召回，合并去重。
+   * 提问、时间线搜索都用这一套，同一个词不会再出现两种结果。
+   */
+  async function searchEntries(question: string): Promise<Entry[]> {
+    const literal = question.trim().toLowerCase();
+    const words = termsFor(question);
+    const scored = entries
+      .map(entry => {
+        let score = literal && entry.content.toLowerCase().includes(literal) ? 10 : 0;
+        score += termsFor(entry.content).filter(word => words.includes(word)).length;
+        return { entry, score };
+      })
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score || b.entry.createdAt.localeCompare(a.entry.createdAt))
+      .slice(0, 24);
+    const semantic = await semanticSources(question);
+    const seen = new Set(scored.map(item => item.entry.id));
+    const merged = scored.map(item => item.entry);
+    for (const entry of semantic) {
+      if (seen.has(entry.id) || merged.length >= 36) continue;
+      seen.add(entry.id);
+      merged.push(entry);
+    }
+    return merged;
+  }
 
-  function navigate(next: View) { setView(next); setSelectedDay(null); setQuery(''); window.scrollTo({ top: 0 }); }  function openDay(day: string) { setSelectedDay(day); setQuery(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }
-  function changeMonth(delta: number) { const [year, number] = month.split('-').map(Number); const next = new Date(year, number - 1 + delta, 1); setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`); }
-  function saveEntry() { if (!draft.trim() || !ready) return; const now = new Date().toISOString(); const entry: Entry = editing ? { ...editing, content: draft.trim(), updatedAt: now } : { id: uid(), content: draft.trim(), source: 'user', createdAt: now, updatedAt: now }; setData(current => ({ ...current, entries: editing ? current.entries.map(item => item.id === entry.id ? entry : item) : [...current.entries, entry] })); logEvent(editing ? 'entry.edited' : 'entry.created', editing ? '修改了一条记忆' : '记下了一条新记忆'); setDraft(''); setEditing(null); setNotice('已妥善记下。'); if (editing) void dropVectors([entry.id]); }
-  function openActions(entry: Entry) { setActionEntry(entry); setTaskTitle(entry.content.slice(0, 100)); setPendingDelete(false); }
-  function addTask() { if (!actionEntry || !taskTitle.trim()) return; if (tasks.some(item => item.sourceId === actionEntry.id)) { setNotice('这条记录已关联事项。'); return; } setData(current => ({ ...current, tasks: [...current.tasks, { id: uid(), title: taskTitle.trim(), status: 'open', sourceId: actionEntry.id, createdAt: new Date().toISOString() }] })); setActionEntry(null); setNotice('已建立事项，原始记录仍保留。'); }
+  function navigate(next: View) { setView(next); window.scrollTo({ top: 0 }); }
+  function openDayInTimeline(day: string) { setView('review'); setReviewTab('timeline'); setFocusDay(day); }
+  function saveEntry() {
+    if (!draft.trim() || !ready) return;
+    const now = new Date().toISOString();
+    const entry: Entry = editing ? { ...editing, content: draft.trim(), updatedAt: now } : { id: uid(), content: draft.trim(), source: 'user', createdAt: now, updatedAt: now };
+    setData(current => ({ ...current, entries: editing ? current.entries.map(item => item.id === entry.id ? entry : item) : [...current.entries, entry] }));
+    logEvent(editing ? 'entry.edited' : 'entry.created', editing ? '修改了一条记忆' : '记下了一条新记忆');
+    setDraft(''); setEditing(null);
+    setNotice('已妥善记下。');
+    if (editing) void dropVectors([entry.id]);
+  }
+  function openActions(entry: Entry) { setActionEntry(entry); setTaskTitle(entry.content.slice(0, 60)); }
+  function addTask() {
+    if (!actionEntry || !taskTitle.trim()) return;
+    if (tasks.some(item => item.sourceId === actionEntry.id)) { setNotice('这条记录已关联事项。'); return; }
+    setData(current => ({ ...current, tasks: [...current.tasks, { id: uid(), title: taskTitle.trim(), status: 'open', sourceId: actionEntry.id, createdAt: new Date().toISOString() }] }));
+    setActionEntry(null);
+    setNotice('已建立事项，原始记录仍保留。');
+  }
   function setStatus(id: string, status: Task['status']) { setData(current => ({ ...current, tasks: current.tasks.map(item => item.id === id ? { ...item, status } : item) })); }
-  function updateJudgment(id: string, status: Judgment['status']) { setData(current => ({ ...current, judgments: current.judgments.map(item => item.id === id ? { ...item, status, updatedAt: new Date().toISOString() } : item) })); }
-  function openObservation(item: Judgment) { setDetailJudgment(item); setCorrecting(false); setEditingObservation(null); setCorrectionReason(''); setCorrectionNote(''); setObservationEditError(''); setRevisionError(''); }
+  function openObservation(item: Judgment) { setDetailJudgment(item); setRevisionError(''); }
   function reviewObservation(item: Judgment, status: Judgment['status']) {
     const now = new Date().toISOString();
     const updated: Judgment = { ...item, status, lastReviewedAt: now, nextReviewAt: status === 'withdrawn' ? undefined : addDays(dayOf(now), status === 'confirmed' ? 30 : 14), updatedAt: now };
@@ -414,42 +487,39 @@ export default function Home() {
   function restoreObservation(item: Judgment) {
     const now = new Date().toISOString();
     const updated: Judgment = { ...item, muted: false, status: 'candidate', lastReviewedAt: now, nextReviewAt: addDays(dayOf(now), 14), updatedAt: now };
-    setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === item.id ? updated : entry) }));
+    setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === item.id ? updated : item) }));
     setDetailJudgment(updated);
     setNotice('已恢复为待核对。');
   }
-  function saveCorrection() {
-    if (!detailJudgment || !correctionReason) return;
+  function saveCorrection(item: Judgment, reason: string, note: string) {
     const now = new Date().toISOString();
-    const muted = correctionReason === '以后不再使用';
-    const status: Judgment['status'] = correctionReason === '不准确' || muted ? 'withdrawn' : 'uncertain';
+    const muted = reason === '以后不再使用';
+    const status: Judgment['status'] = reason === '不准确' || muted ? 'withdrawn' : 'uncertain';
     const updated: Judgment = {
-      ...detailJudgment, status, muted: muted || !!detailJudgment.muted,
-      confidence: correctionReason === '只发生过一次' ? 'weak' : detailJudgment.confidence,
-      corrections: [...(detailJudgment.corrections || []), { reason: correctionReason, note: correctionNote.trim(), at: now }],
+      ...item, status, muted: muted || !!item.muted,
+      confidence: reason === '只发生过一次' ? 'weak' : item.confidence,
+      corrections: [...(item.corrections || []), { reason, note, at: now }],
       lastReviewedAt: now,
       nextReviewAt: status === 'withdrawn' ? undefined : addDays(dayOf(now), 14),
       updatedAt: now,
     };
     setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === updated.id ? updated : entry) }));
-    setDetailJudgment(updated); setCorrecting(false); setCorrectionReason(''); setCorrectionNote(''); logEvent('judgment.updated', `纠正了一条观察：${detailJudgment.topic}`); setNotice('已记录你的纠正。');
+    setDetailJudgment(updated);
+    logEvent('judgment.updated', `纠正了一条观察：${item.topic}`);
+    setNotice('已记录你的纠正。');
   }
-  function saveObservationEdit() {
-    if (!detailJudgment || !editingObservation) return;
-    const topic = editingObservation.topic.trim();
-    const statement = editingObservation.statement.trim();
-    if (!topic || !statement) { setObservationEditError('主题和判断都不能为空。'); return; }
+  function saveObservationEdit(item: Judgment, topic: string, statement: string) {
     const now = new Date().toISOString();
-    const currentVersion = detailJudgment.version || 1;
+    const currentVersion = item.version || 1;
     const updated: Judgment = {
-      ...detailJudgment, topic, statement, version: currentVersion + 1,
-      versions: [...(detailJudgment.versions || []), { version: currentVersion, topic: detailJudgment.topic, statement: detailJudgment.statement, at: now, reason: '用户修改' }],
+      ...item, topic, statement, version: currentVersion + 1,
+      versions: [...(item.versions || []), { version: currentVersion, topic: item.topic, statement: item.statement, at: now, reason: '用户修改' }],
       lastReviewedAt: now, nextReviewAt: addDays(dayOf(now), 21), updatedAt: now,
     };
     setData(current => ({ ...current, judgments: current.judgments.map(entry => entry.id === updated.id ? updated : entry) }));
-    setDetailJudgment(updated); setEditingObservation(null); setObservationEditError(''); setNotice('已保存修改，旧版本保留在历史里。');
+    setDetailJudgment(updated);
+    setNotice('已保存修改，旧版本保留在历史里。');
   }
-  function createJudgment(topic: string) { const source = entries.filter(entry => termsFor(entry.content).includes(topic)); const now = new Date().toISOString(); setData(current => ({ ...current, judgments: [...current.judgments, { id: uid(), topic, statement: `“${topic}”在 ${new Set(source.map(entry => dayOf(entry.createdAt))).size} 个记录日中出现。它可能值得回看，目前不能据此推断行为或人格。`, supportIds: source.map(entry => entry.id), counterIds: [], status: 'candidate', origin: 'word', type: 'question', confidence: 'weak', confidenceReason: '仅基于词语重复，没有核对具体情境', nextReviewAt: addDays(today(), 21), versions: [], corrections: [], version: 1, createdAt: now, updatedAt: now }] })); logEvent('judgment.created', `保存了一条候选观察：${topic}`); setNotice('已保存候选观察，请先查看原文。'); }
   async function reviseObservation(item: Judgment) {
     if (revisionBusy || !modelReady) return;
     setRevisionBusy(true); setRevisionError('');
@@ -459,13 +529,13 @@ export default function Home() {
       const since = item.lastReviewedAt || item.createdAt;
       const fresh = entries.filter(entry => entry.createdAt > since).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12);
       const raw = await callModel(settings, buildRevisionRequest({ item, support, counter, corrections: item.corrections || [], fresh }), 90000);
-      const draft = parseRevision(raw, item);
+      const revised = parseRevision(raw, item);
       const now = new Date().toISOString();
       const currentVersion = item.version || 1;
       const updated: Judgment = {
-        ...item, statement: draft.statement, type: draft.type,
-        alternative: draft.alternative,
-        falsifier: draft.falsifier,
+        ...item, statement: revised.statement, type: revised.type,
+        alternative: revised.alternative,
+        falsifier: revised.falsifier,
         version: currentVersion + 1,
         versions: [...(item.versions || []), { version: currentVersion, topic: item.topic, statement: item.statement, at: now, reason: (item.corrections && item.corrections.length) ? '按纠正重写' : '重新核对' }],
         status: 'candidate', lastReviewedAt: now, nextReviewAt: addDays(dayOf(now), 21), updatedAt: now,
@@ -476,23 +546,25 @@ export default function Home() {
       setRevisionError(error instanceof Error ? error.message : '重写失败，请稍后重试。');
     } finally { setRevisionBusy(false); }
   }
-  async function generateObservations() {
-    if (observationBusy) return;
-    if (!modelReady) { setObservationError('还没有连接模型。请先在“偏好与数据”里填写接口地址、模型名称和访问密钥。'); return; }
+  async function createObservations(): Promise<{ created: Judgment[]; note: string }> {
     const scope = observationScope;
-    if (scope.length < 3 && !digests.length) { setObservationError('最近 30 天的记录还太少，也还没有长期记忆；先积累一些再让 AI 观察。'); return; }
+    if (scope.length < 3 && !digests.length) throw new Error('最近 30 天的记录还太少，也还没有长期记忆；先积累一些再让 AI 观察。');
     const scopeIds = new Set(scope.map(entry => entry.id));
     const recentTerms = new Set(scope.flatMap(entry => termsFor(entry.content)));
     const counterPool = entries.filter(entry => !scopeIds.has(entry.id)).map(entry => ({ entry, score: termsFor(entry.content).filter(term => recentTerms.has(term)).length })).filter(item => item.score > 0).sort((a, b) => b.score - a.score || b.entry.createdAt.localeCompare(a.entry.createdAt)).slice(0, 8).map(item => item.entry);
     const allowedIds = new Set([...scope.map(entry => entry.id), ...counterPool.map(entry => entry.id), ...latestDigests.flatMap(item => item.evidence.map(evidence => evidence.id))]);
+    const raw = await callModel(settings, buildObservationRequest({ scope, counterPool, digests: latestDigests, judgments, profile, threads, recentSummaries: summaries.slice(-3) }), 120000);
+    return parseObservations(raw, { allowedIds, entries, existingTopics: judgments.map(item => item.topic) });
+  }
+  async function generateObservations() {
+    if (observationBusy) return;
+    if (!modelReady) { setObservationError('还没有连接模型。请先在“偏好与数据”里填写接口地址、模型名称和访问密钥。'); return; }
     setObservationBusy(true); setObservationError('');
     try {
-      const raw = await callModel(settings, buildObservationRequest({ scope, counterPool, digests: latestDigests, judgments, profile }), 120000);
-      const { created, note } = parseObservations(raw, { allowedIds, entries, existingTopics: judgments.map(item => item.topic) });
-      if (!created.length) { setObservationError(note || '这次没有找到足够可靠的新观察。可以等记录多一些再试，或查看下面的词语线索。'); return; }
+      const { created, note } = await createObservations();
+      if (!created.length) { setObservationError(note || '这次没有找到足够可靠的新观察。可以等记录多一些再试。'); return; }
       setData(current => ({ ...current, judgments: [...current.judgments, ...created] }));
       setNotice(`已生成 ${created.length} 条候选观察，请逐条核对证据。`);
-      setTimeout(() => document.getElementById('saved-observations')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
     } catch (error) {
       setObservationError(error instanceof Error ? error.message : '生成失败，请稍后重试。');
     } finally { setObservationBusy(false); }
@@ -500,7 +572,7 @@ export default function Home() {
   async function digestWeek(week: DigestWeek, known: MemoryDigest[]) {
     setDigestProgress(`正在沉淀 ${shortDate(week.start)}–${shortDate(week.end)}…`);
     const previous = known.filter(item => item.end < week.start).sort((a, b) => a.end.localeCompare(b.end)).at(-1);
-    const raw = await callModel(settings, buildDigestRequest(week, previous, judgments.filter(item => item.status === 'confirmed'), profile), 120000);
+    const raw = await callModel(settings, buildDigestRequest(week, previous, judgments.filter(item => item.status === 'confirmed'), profile, threads), 120000);
     return parseDigest(raw, week, settings.model);
   }
   function digestErrorText(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
@@ -536,7 +608,6 @@ export default function Home() {
     try {
       const digest = await digestWeek(week, digests.filter(item => item.start !== start));
       setData(current => ({ ...current, digests: [...current.digests.filter(item => item.start !== start), digest] }));
-      setRedigestPending(null);
       setNotice(`已按本周 ${week.entries.length} 条记录重新沉淀。`);
       logEvent('digest.generated', `重新沉淀了 ${shortDate(week.start)} 那一周`);
     } catch (error) {
@@ -545,17 +616,12 @@ export default function Home() {
   }
   function removeDigest(id: string) {
     setData(current => ({ ...current, digests: current.digests.filter(item => item.id !== id) }));
-    setRemoveDigestPending(null);
     setNotice('已删除这段长期记忆，原始记录没有改动。需要时可以重新沉淀。');
   }
-  function previewImport(text: string) { try { const { store, skipped } = parseBackupText(text); setImportPreview({ ...store, skipped }); } catch (error) { setNotice(`无法导入：${error instanceof Error ? error.message : '文件格式不正确'}`); } }
-  function confirmImport() {
-    if (!importPreview) return;
-    const incoming: Store = { entries: importPreview.entries, tasks: importPreview.tasks, judgments: importPreview.judgments, memoryFeedback: importPreview.memoryFeedback, summaries: importPreview.summaries, digests: importPreview.digests, profile: importPreview.profile };
-    const replaced = importMode === 'replace';
+  function confirmImport(incoming: Store, mode: 'merge' | 'replace') {
+    const replaced = mode === 'replace';
     const kept = replaced ? new Set(incoming.entries.map(entry => entry.id)) : new Set([...entries, ...incoming.entries].map(entry => entry.id));
     setData(current => replaced ? incoming : mergeStores(current, incoming));
-    setImportPreview(null);
     setImportOpen(false);
     setNotice('备份已恢复，欢迎继续记录。');
     void syncVectors(kept);
@@ -578,31 +644,13 @@ export default function Home() {
     setBackupText(text);
     const result = await saveBackupFile(text, backupFileName());
     // 只有真的把数据交出去了才记时间：用户在分享面板点取消时不能算备份成功，
-    // 否则首页的“还没备份过”提醒会消失，用户会以为数据已经带出设备了。
+    // 否则“还没备份过”的提醒会消失，用户会以为数据已经带出设备了。
     if (result === 'cancelled') return;
     markExported(entries.length);
     if (backupMeta.autoDirName) {
       const ok = await runAutoBackup();
       if (!ok) setNotice('备份文件已保存，但自动备份到目录这一步没成功，请检查目录授权。');
     }
-  }
-  // 检索：先按分词命中打分；同时试一次语义召回（缓存里有向量时），两者合并去重。
-  async function scopedSources(question: string) {
-    const words = termsFor(question);
-    const scored = entries.map(entry => ({ entry, score: termsFor(entry.content).filter(word => words.includes(word)).length })).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
-    const keyword = (scored.length ? scored : [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(entry => ({ entry, score: 0 }))).slice(0, 12).map(item => item.entry);
-    // 「仅观察」范围用不到原文，不必再为一次语义检索等一趟网络。
-    const semantic = chatScope !== 'judgments' ? await semanticSources(question) : [];
-    if (!semantic.length) return keyword;
-    const seen = new Set<string>();
-    const merged: Entry[] = [];
-    for (const entry of [...semantic, ...keyword]) {
-      if (seen.has(entry.id)) continue;
-      seen.add(entry.id);
-      merged.push(entry);
-      if (merged.length >= 12) break;
-    }
-    return merged;
   }
 
   async function ask() {
@@ -611,119 +659,250 @@ export default function Home() {
     setMessages(current => [...current, { role: 'user', content: question }]);
     setChatInput('');
     setBusy(true);
-    const sources = await scopedSources(question);
+    const questionTerms = new Set(termsFor(question));
+    const matchedThreads = threads.filter(thread => thread.terms.some(term => questionTerms.has(term))).slice(0, 2);
+    const found = await searchEntries(question);
+    // 问题命中某条线索时，把这条线上更早的记录也带上；否则模型只能看到零散几天的片段。
+    const threadEntries = matchedThreads.flatMap(thread => thread.entryIds).map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry));
+    const merged = [...new Map([...found, ...threadEntries].map(entry => [entry.id, entry])).values()];
+    const sources = merged.length ? merged.slice(0, 14) : [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12);
     const useEntries = chatScope !== 'judgments';
-    const useJudgments = chatScope !== 'entries';
     try {
       if (!modelReady) {
         setMessages(current => [...current, { role: 'assistant', content: sources.length ? `找到 ${sources.length} 条可能相关的原始记录。当前是本地检索模式，只展示原文，不作推断。在“偏好与数据”中连接模型后，可以进行真正的分析。` : '暂未找到相关记录。可以补充人物、主题或具体事件；连接模型后也可以直接提问。', sources: useEntries ? sources : [] }]);
         return;
       }
-      const answer = await callModel(settings, buildChatRequest({ question, scope: chatScope, sources, confirmed: confirmedJudgments, history: messages.map(({ role, content }) => ({ role, content })), profile }));
+      const answer = await callModel(settings, buildChatRequest({ question, scope: chatScope, sources, confirmed: confirmedJudgments, history: messages.map(({ role, content }) => ({ role, content })), profile, digests: latestDigests, threadNotes, recentSummaries: summaries.slice(-2), threads: matchedThreads.length ? matchedThreads : threads }), 120000);
       setMessages(current => [...current, { role: 'assistant', content: answer, sources: useEntries ? sources : [] }]);
     } catch (error) {
       setMessages(current => [...current, { role: 'assistant', content: `这次请求没有完成：${error instanceof Error ? error.message : '未知错误'}。请检查接口地址、访问密钥、模型名称，以及接口是否允许浏览器跨域访问。原始记录没有受到影响。` }]);
     } finally { setBusy(false); }
   }
 
-  async function generateSummary(day: string) {
+  async function summarizeDay(day: string): Promise<DailySummary> {
     const dayEntries = entries.filter(entry => dayOf(entry.createdAt) === day).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    if (!dayEntries.length || summaryBusy) return;
+    if (!dayEntries.length) throw new Error('这一天没有记录。');
+    if (!modelReady) throw new Error('还没有连接模型。请在“偏好与数据”中填写接口地址、模型名称和访问密钥。');
+    const earlier = entries.filter(entry => dayOf(entry.createdAt) < day).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 25);
+    const previous = [...summaries].filter(item => item.day < day).sort((a, b) => a.day.localeCompare(b.day)).at(-1);
+    const raw = await callModel(settings, buildSummaryRequest(day, dayEntries, earlier, { profile, threads, previous, digests: latestDigests.slice(-2) }), 120000);
+    return parseSummary(raw, day, dayEntries, settings.model);
+  }
+  async function generateSummary(day: string) {
+    if (summaryBusy) return;
     setSummaryBusy(true); setSummaryError('');
     try {
-      if (!modelReady) { setSummaryError('还没有连接模型。请在“偏好与数据”中填写接口地址、模型名称和访问密钥。'); return; }
-      const earlier = entries.filter(entry => dayOf(entry.createdAt) < day).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 25);
-      const raw = await callModel(settings, buildSummaryRequest(day, dayEntries, earlier), 120000);
-      const summary = parseSummary(raw, day, dayEntries, settings.model);
+      const summary = await summarizeDay(day);
       setData(current => ({ ...current, summaries: [...current.summaries.filter(item => item.day !== day), summary] }));
-      logEvent('summary.generated', `生成了 ${day} 的总结`);
-      setNotice('这一天的总结已生成并保存在本机。');
+      logEvent('summary.generated', `生成了 ${day} 的回望`);
+      setNotice('这一天的回望已生成并保存在本机。');
     } catch (error) {
       setSummaryError(error instanceof Error ? error.message : '生成失败，请稍后重试。');
     } finally { setSummaryBusy(false); }
   }
-  const header = (eyebrow: string, title: string, subtitle: string) => <header className="page-heading"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{subtitle}</p></div></header>;
-  const entryList = (items: Entry[]) => <div className="entry-list">{items.map(entry => <EntryCard key={entry.id} entry={entry} onOpen={openActions}/>)}</div>;
-  // 五个视图共用同一份数据与回调；视图组件只负责渲染，状态仍留在这里。
-  const viewProps = { entries, tasks, judgments, summaries, digests, settings, modelReady, counts, topics, todaysEntries, dayTopics, historicalEcho, activeTasks, observationScope, observationStats, observationFilter, observationReviewFlags, visibleJudgments, chatScope, messages, chatInput, busy, digestBusy, digestProgress, digestError, digestEntryCount, nextDigestBatch, sortedDigests, digestFreshness, redigestPending, removeDigestPending, observationBusy, observationError, uncoveredWeeks, summaryBusy, summaryError, selectedDay, selectedEntries, month, calendar, heatDays, query, searchResults, draft, editing, ready, setView, setSelectedDay, setMonth, setQuery, setDraft, setEditing, setChatScope, setChatInput, setObservationFilter, setShowSummary, setShowDigests, setRedigestPending, setRemoveDigestPending, setDigestError, setStatus, setNotice, setTyping, setShowSettings, navigate, openDay, changeMonth, openActions, saveEntry, openObservation, createJudgment, ask, generateSummary, generateObservations, updateDigests, redigestWeek, removeDigest, summaryFor, composerRef, chatEndRef, header, entryList, profileCount: profile.filter(item => item.confirmed).length, profileTotal: profile.length, onOpenProfile: () => setShowProfile(true), backupAgeDays };
+
+  function addTaskFromText(text: string) {
+    const title = text.trim().slice(0, 120);
+    if (!title) return;
+    if (tasks.some(task => task.title === title && (task.status === 'open' || task.status === 'deferred'))) { setNotice('这件事已经在事项里了。'); return; }
+    setData(current => ({ ...current, tasks: [...current.tasks, { id: uid(), title, status: 'open', sourceId: '', createdAt: new Date().toISOString() }] }));
+    setNotice('已记为事项，原始记录没有改动。');
+  }
+
+  // ── 线索串联 ──
+  async function generateThreadNote(topic: string) {
+    if (threadBusy) return;
+    const thread = threads.find(item => item.topic === topic);
+    if (!thread) { setThreadError('这条线索现在找不到记录了。'); return; }
+    const list = thread.entryIds.map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (list.length < 2) { setThreadError('这条线索只有一条记录，暂时串不起来。'); return; }
+    if (!modelReady) { setThreadError('还没有连接模型。请在“偏好与数据”里填写接口地址、模型名称和访问密钥。'); return; }
+    setThreadBusy(true); setThreadError('');
+    try {
+      const raw = await callModel(settings, buildThreadRequest(topic, list, profile), 120000);
+      const note = parseThreadNote(raw, topic, list, settings.model);
+      setData(current => ({ ...current, threadNotes: [...current.threadNotes.filter(item => item.topic !== topic), note] }));
+      logEvent('summary.generated', `把「${topic}」这条线索串了起来`);
+      setNotice('这条线已经串好，保存在本机，随时可以重做。');
+    } catch (error) {
+      setThreadError(error instanceof Error ? error.message : '串联失败，请稍后重试。');
+    } finally { setThreadBusy(false); }
+  }
+
+  // ── 自动整理 ──
+  async function runAutoPilot() {
+    if (autoBusy) return;
+    setAutoBusy(true);
+    const done: string[] = [];
+    try {
+      // 1) 补最近一天缺的回望（当天不补，避免过早下结论）
+      const missingDay = [...new Set(entries.map(entry => dayOf(entry.createdAt)))]
+        .filter(day => day < today() && day >= addDays(today(), -7) && !summaries.some(item => item.day === day))
+        .sort((a, b) => b.localeCompare(a))[0];
+      if (missingDay) {
+        try {
+          const summary = await summarizeDay(missingDay);
+          setData(current => ({ ...current, summaries: [...current.summaries.filter(item => item.day !== missingDay), summary] }));
+          done.push(`${shortDate(missingDay)} 的回望`);
+        } catch { /* 接口失败或内容不足，下个会话再试 */ }
+      }
+      // 2) 沉淀一个已结束、还没覆盖的周
+      const week = uncoveredWeeks[0];
+      if (week) {
+        try {
+          const digest = await digestWeek(week, digests);
+          setData(current => ({ ...current, digests: [...current.digests, digest] }));
+          setSettings(current => ({ ...current, lastAutoDigestAt: new Date().toISOString() }));
+          done.push(`「${digest.title || shortDate(week.start)}」这一周`);
+        } catch { /* 下个会话再试 */ }
+      }
+      // 3) 新记录足够多时，自动生成候选观察；用户仍需逐条核对
+      const sinceObservation = settings.lastAutoObservationAt ? Date.parse(settings.lastAutoObservationAt) : 0;
+      const freshForObservation = entries.filter(entry => Date.parse(entry.createdAt) > sinceObservation).length;
+      const observationDue = settings.lastAutoObservationAt ? freshForObservation >= 10 : entries.length >= 14;
+      if (observationDue && judgments.length < 40) {
+        try {
+          const { created } = await createObservations();
+          if (created.length) {
+            setData(current => ({ ...current, judgments: [...current.judgments, ...created] }));
+            done.push(`${created.length} 条候选观察`);
+          }
+          setSettings(current => ({ ...current, lastAutoObservationAt: new Date().toISOString() }));
+        } catch { /* 数据还不够或接口失败，下个会话再试 */ }
+      }
+      // 4) 每两周、新记录足够多时，提议几条背景；默认待确认
+      const sinceProfile = settings.lastAutoProfileAt ? Date.parse(settings.lastAutoProfileAt) : 0;
+      const freshForProfile = entries.filter(entry => Date.parse(entry.createdAt) > sinceProfile).length;
+      const profileDue = (settings.lastAutoProfileAt ? freshForProfile >= 25 : entries.length >= 30) && (!settings.lastAutoProfileAt || Date.now() - sinceProfile >= 14 * 86400000);
+      if (profileDue && profile.filter(item => !item.confirmed).length < 6) {
+        try {
+          const items = await createProfileProposals();
+          if (items.length) {
+            setData(current => ({ ...current, profile: [...current.profile, ...items] }));
+            done.push(`${items.length} 条背景提议`);
+          }
+          setSettings(current => ({ ...current, lastAutoProfileAt: new Date().toISOString() }));
+        } catch { /* 下个会话再试 */ }
+      }
+    } finally {
+      setAutoBusy(false);
+      if (done.length) setNotice(`AI 已自动整理：${done.join('、')}。所有结果都可以修改、重做或撤回。`);
+    }
+  }
+
+  async function autoIndexVectors() {
+    if (autoVectorRef.current || !settings.embedModel?.trim()) return;
+    autoVectorRef.current = true;
+    try {
+      const existing = await readVectors();
+      let pending = entries.filter(entry => !existing.has(entry.id));
+      let rounds = 0;
+      while (pending.length && rounds < 2) {
+        const batch = pending.slice(0, 24);
+        const vectors = await embedTexts(settings, batch.map(entry => entry.content));
+        const rows: VectorRow[] = [];
+        batch.forEach((entry, index) => { const vector = vectors[index]; if (vector?.length) rows.push({ id: entry.id, vector, at: new Date().toISOString(), model: embeddingModel(settings) }); });
+        if (!rows.length) break;
+        await writeVectors(rows);
+        rounds++;
+        const updated = await readVectors();
+        pending = pending.filter(entry => !updated.has(entry.id));
+        setVectorCount(updated.size);
+      }
+    } catch { /* 接口不支持 /embeddings 时保持关键词检索，不打扰用户 */ }
+    finally { autoVectorRef.current = false; }
+  }
+
   return <main className={`app-shell theme-${theme}${typing ? ' keyboard-open' : ''}`}>
-    <aside className="sidebar"><button className="brand" onClick={() => navigate('home')}><span className="brand-mark">清</span><span>清醒<small>留住当时的清醒</small></span></button><nav>{navItems.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}><Icon name={item.icon}/>{item.label}</button>)}</nav><div className="sidebar-bottom"><p>人们忘掉的不是事实，<br/>而是当初的清醒。</p><button className="nav-item" onClick={() => setShowSettings(true)}><Icon name="settings"/>偏好与数据</button><small>{VERSION}</small></div></aside>
-    <section className="main-area"><header className="topbar"><span className="mobile-brand">清醒<span>个人记忆</span></span><span className="device-status"><i/>记录保存在本机</span><button className="icon-button" aria-label="偏好与数据" onClick={() => setShowSettings(true)}><Icon name="settings"/></button></header>
-      {view === 'home' && <HomeView {...viewProps}/>}
-      {view === 'memory' && <MemoryView {...viewProps}/>}
-      {view === 'judgments' && <JudgmentsView {...viewProps}/>}
-      {view === 'chat' && <ChatView {...viewProps}/>}
-      {view === 'tasks' && <TasksView {...viewProps}/>}
+    <aside className="sidebar">
+      <button className="brand" onClick={() => navigate('now')}><span className="brand-mark">清</span><span>清醒<small>留住当时的清醒</small></span></button>
+      <nav>{navItems.map(item => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => navigate(item.id)}><Icon name={item.icon}/>{item.label}</button>)}</nav>
+      <div className="sidebar-bottom">
+        <p>人们忘掉的不是事实，<br/>而是当初的清醒。</p>
+        <button className="nav-item" onClick={() => setShowSettings(true)}><Icon name="settings"/>偏好与数据</button>
+        <small>{VERSION}</small>
+      </div>
+    </aside>
+    <section className="main-area">
+      <header className="topbar">
+        <span className="mobile-brand">清醒<span>个人记忆</span></span>
+        {autoBusy && <span className="auto-pill" role="status"><i/>AI 正在自动整理</span>}
+        <span className="device-status"><i/>记录保存在本机</span>
+        <button className="icon-button" aria-label="偏好与数据" onClick={() => setShowSettings(true)}><Icon name="settings"/></button>
+      </header>
+      {view === 'now' && <NowView
+        entries={entries} todaysEntries={todaysEntries} echoes={echoes} todayCount={todaysEntries.length} streak={streak}
+        draft={draft} editing={editing} ready={ready} setDraft={setDraft} setEditing={setEditing} saveEntry={saveEntry} composerRef={composerRef} setTyping={setTyping} openActions={openActions}
+        activeTasks={activeTasks} setStatus={setStatus}
+        todaySummary={summaryFor(today())} summaryBusy={summaryBusy} summaryError={summaryError} modelReady={modelReady} generateSummary={generateSummary}
+        onAddTask={addTaskFromText}
+        backupAgeDays={backupAgeDays} onOpenSettings={() => setShowSettings(true)}
+        onOpenTimeline={() => { setView('review'); setReviewTab('timeline'); window.scrollTo({ top: 0 }); }}
+        onOpenDay={openDayInTimeline} onAsk={() => navigate('ask')}
+        threads={threads} thisDay={thisDay}
+        onOpenThread={topic => { setFocusThread(topic); setReviewTab('main'); navigate('review'); }}
+      />}
+      {view === 'review' && <ReviewView
+        entries={entries} counts={counts} judgments={judgments} observationReviewFlags={observationReviewFlags} openObservation={openObservation}
+        observationBusy={observationBusy} observationError={observationError} observationScopeCount={observationScope.length} generateObservations={generateObservations} modelReady={modelReady}
+        digests={digests} uncoveredWeekCount={uncoveredWeeks.length} onOpenDigests={() => setShowDigests(true)}
+        profile={profile} onOpenProfile={() => setShowProfile(true)}
+        summaryFor={summaryFor} generateSummary={generateSummary} summaryBusy={summaryBusy} summaryError={summaryError}
+        openActions={openActions} searchEntries={searchEntries}
+        tab={reviewTab} setTab={setReviewTab} focusDay={focusDay} onFocusDayConsumed={() => setFocusDay(null)}
+        tasks={tasks} setStatus={setStatus}
+        threads={threads} threadNotes={threadNotes}
+        focusThread={focusThread} onFocusThreadConsumed={() => setFocusThread(null)}
+        onGenerateThread={topic => void generateThreadNote(topic)} threadBusy={threadBusy} threadError={threadError}
+      />}
+      {view === 'ask' && <AskView
+        messages={messages} chatInput={chatInput} setChatInput={setChatInput} chatScope={chatScope} setChatScope={setChatScope}
+        busy={busy} ask={ask} modelReady={modelReady} setTyping={setTyping} chatEndRef={chatEndRef} onOpenDay={openDayInTimeline}
+        threads={threads}
+      />}
     </section>
 
     <nav className="mobile-nav" aria-label="主导航">{navItems.map(item => <button key={item.id} className={view === item.id ? 'active' : ''} aria-current={view === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><Icon name={item.icon}/><span>{item.label}</span></button>)}</nav>
 
     {notice && <button className="notice" role="status" onClick={() => setNotice('')}>{notice}<Icon name="close" size={15}/></button>}
 
-    {actionEntry && <Modal title="这条记忆" onClose={() => setActionEntry(null)}><div className="source-preview"><time>{dateLabel(dayOf(actionEntry.createdAt))} · {timeOf(actionEntry.createdAt)}</time><p>{actionEntry.content}</p></div><div className="button-row"><button className="secondary-button" onClick={() => { setEditing(actionEntry); setDraft(actionEntry.content); setActionEntry(null); navigate('home'); setTimeout(() => composerRef.current?.focus(), 50); }}>编辑记录</button><button className="quiet-button" onClick={() => setPendingDelete(true)}>删除记录</button></div><div className="modal-section"><h3>标记这条记录</h3><div className="button-row">{['准确', '部分准确', '不准确', '暂不判断'].map(value => <button key={value} className={actionEntry.feedback === value ? 'secondary-button' : 'quiet-button'} onClick={() => { setData(current => ({ ...current, entries: current.entries.map(item => item.id === actionEntry.id ? { ...item, feedback: value, updatedAt: new Date().toISOString() } : item) })); setActionEntry(current => current ? { ...current, feedback: value } : null); }}>{value}</button>)}</div></div>{pendingDelete && <div className="delete-confirm"><p>删除原文后，关联事项保留，判断证据会显示为已删除。</p><button className="danger-button" onClick={() => { logEvent('entry.deleted', `删除了一条记忆：${actionEntry.content.slice(0, 20)}`, actionEntry); setData(current => ({ ...current, entries: current.entries.filter(item => item.id !== actionEntry.id) })); void dropVectors([actionEntry.id]); setActionEntry(null); }}>确认删除</button></div>}<div className="modal-section"><h3>确认一件要做的事</h3><label className="field-label">事项名称<input value={taskTitle} onChange={event => setTaskTitle(event.target.value)}/></label><button className="secondary-button" onClick={addTask}>建立事项</button></div></Modal>}
+    {actionEntry && <EntryModal
+      entry={actionEntry}
+      hasTask={tasks.some(item => item.sourceId === actionEntry.id)}
+      taskTitle={taskTitle} setTaskTitle={setTaskTitle} onAddTask={addTask}
+      onEdit={() => { setEditing(actionEntry); setDraft(actionEntry.content); setActionEntry(null); setView('now'); setTimeout(() => composerRef.current?.focus(), 50); }}
+      onDelete={() => { logEvent('entry.deleted', `删除了一条记忆：${actionEntry.content.slice(0, 20)}`, actionEntry); setData(current => ({ ...current, entries: current.entries.filter(item => item.id !== actionEntry.id) })); void dropVectors([actionEntry.id]); setActionEntry(null); }}
+      onFeedback={value => {
+        setData(current => ({ ...current, entries: current.entries.map(item => item.id === actionEntry.id ? { ...item, feedback: value, updatedAt: new Date().toISOString() } : item) }));
+        setActionEntry(current => current ? { ...current, feedback: value } : null);
+      }}
+      onClose={() => setActionEntry(null)}
+    />}
     {showProfile && <ProfileModal items={profile} entries={entries} busy={profileBusy} error={profileError} onClose={() => setShowProfile(false)} onAdd={addProfileItem} onUpdate={updateProfileItem} onRemove={removeProfileItem} onConfirm={confirmProfileItem} onPropose={() => void proposeProfile()}/>}
-    {showSummary && <Modal title="把今天重新看一遍" onClose={() => setShowSummary(false)}>{(() => { const s = summaryFor(today()); return <><p className="modal-intro">基于今天 {todaysEntries.length} 条原始记录{s ? `，由 ${s.model} 生成` : ''}。AI 只读取今天的记录，不补充未记录的事实。</p>{!todaysEntries.length ? <div className="empty-state"><p>今天还没有记录，暂不形成总结。</p></div> : <>{s ? <div className="ai-summary">{s.overview && <p className="summary-overview">{s.overview}</p>}{[['今天反复出现', s.repeated], ['还没有解决', s.unresolved], ['与过去的连接', s.connections], ['情绪回看', s.emotion], ['明天的收窄', s.tomorrow]].filter(([, text]) => text).map(([label, text]) => <section className="summary-block" key={label}><span className="badge">{label}</span><p>{text}</p></section>)}{s.sourceIds.length > 0 && <details><summary>本次引用的 {s.sourceIds.length} 条原文</summary>{s.sourceIds.map(id => { const source = entries.find(entry => entry.id === id); return source ? <blockquote key={id}><time>{timeOf(source.createdAt)}</time>{source.content}</blockquote> : null; })}</details>}<p className="muted">生成于 {new Date(s.generatedAt).toLocaleString('zh-CN')} · 共 {s.entryCount} 条记录</p></div> : <div className="ai-empty"><h3>{modelReady ? '还没有生成今天的总结' : '连接模型后可以生成总结'}</h3><p>{modelReady ? `今天有 ${todaysEntries.length} 条记录。让模型把它们整理成一份可以五分钟读完的总结。` : '在“偏好与数据”中填写接口地址与模型，AI 就能阅读今天的记录并生成总结。'}</p></div>}<div className="button-row"><button className="primary-button" disabled={summaryBusy || !modelReady} onClick={() => void generateSummary(today())}>{summaryBusy ? '正在整理今天的记录……' : s ? '重新生成' : '生成今天的总结'}</button><button className="quiet-button" onClick={() => { setShowSummary(false); navigate('memory'); openDay(today()); }}>看原始记录</button></div>{summaryError && <p className="form-error">{summaryError}</p>}{!modelReady && <p className="muted">没有连接模型时，仍然可以在“记忆”里按日期阅读原文。</p>}</>}</>; })()}</Modal>}
-    {showSettings && <Modal title="偏好与数据" onClose={() => setShowSettings(false)}><section className="settings-section"><div className="section-heading"><h3>外观</h3><span className="muted">跟随你的阅读习惯</span></div><div className="theme-choices"><button className={theme === 'light' ? 'selected' : ''} onClick={() => setTheme('light')}><span className="theme-preview preview-light"/>白色<span>明亮、温和</span></button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => setTheme('dark')}><span className="theme-preview preview-dark"/>深色<span>安静、柔和</span></button></div></section><section className="settings-section"><h3>备份与换设备</h3><p className="muted">备份包含记录、事项与阶段性观察，不包含访问密钥。</p><div className="button-row"><button className="secondary-button" onClick={() => void exportData()}><Icon name="download" size={17}/>导出备份</button><button className="secondary-button" onClick={() => { setShowSettings(false); setImportOpen(true); }}><Icon name="upload" size={17}/>导入备份</button></div>{backupText && <details><summary>文件未保存？复制完整备份</summary><textarea className="backup-text" readOnly value={backupText} aria-label="完整备份内容"/><button className="quiet-button" onClick={async () => { try { await navigator.clipboard.writeText(backupText); setNotice('备份已复制。'); } catch { setNotice('请长按备份文本，全选后复制。'); } }}>复制备份</button></details>}</section><section className="settings-section"><h3>模型连接</h3><p className="muted">不连接模型也能记录与检索。静态网页直接请求接口，需要服务支持浏览器跨域。</p><label className="field-label">接口地址<input placeholder="填写完整接口地址，结尾为 /v1" value={settings.baseUrl} onChange={event => setSettings(current => ({ ...current, baseUrl: event.target.value }))}/></label><label className="field-label">模型名称<input placeholder="填写模型名称" value={settings.model} onChange={event => setSettings(current => ({ ...current, model: event.target.value }))}/></label><label className="field-label">访问密钥<input type="password" autoComplete="off" value={settings.apiKey} onChange={event => setSettings(current => ({ ...current, apiKey: event.target.value }))}/></label><label className="field-label">向量模型（可选）<input placeholder="留空就用上面的模型名" value={settings.embedModel || ''} onChange={event => setSettings(current => ({ ...current, embedModel: event.target.value }))}/></label></section><section className="settings-section"><div className="section-heading"><h3>本机存储</h3><span className="muted">{storageInfo ? (storageInfo.mode === 'indexeddb' ? 'IndexedDB' : '浏览器存储') : '读取中'}</span></div><p className="muted">{storageInfo ? `${storageInfo.entries} 条记录 · ${storageInfo.tasks} 件事项 · ${storageInfo.judgments} 条观察${storageInfo.usage ? ` · 已用 ${(storageInfo.usage / 1048576).toFixed(1)} MB${storageInfo.quota ? ` / 可用 ${(storageInfo.quota / 1048576).toFixed(0)} MB` : ''}` : ''}` : ''}{storageInfo?.lastError ? ` · ${storageInfo.lastError}` : ''}</p><div className="button-row"><button className="secondary-button" onClick={() => void takeSnapshot('手动快照')}>立即存一份快照</button></div>{!!snapshots.length && <div className="snapshot-list">{snapshots.map(snapshot => <div className="snapshot-item" key={snapshot.id}><div><time>{new Date(snapshot.at).toLocaleString('zh-CN')}</time><small>{snapshot.reason}</small></div><div className="button-row"><button className="text-button" onClick={() => void restoreSnapshotById(snapshot.id)}>恢复</button><button className="text-button" onClick={() => void removeSnapshot(snapshot.id)}>删除</button></div></div>)}</div>}{!!journal.length && <details className="journal-list"><summary>操作记录（最近 {journal.length} 条）</summary>{journal.map(event => <div className="journal-item" key={event.id}><time>{new Date(event.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time><span>{event.text}</span>{event.kind === 'entry.deleted' && event.entry && <button className="text-button" onClick={() => void restoreDeletedEntry(event.entry as Entry)}>找回</button>}</div>)}</details>}</section><section className="settings-section"><h3>连接与检索</h3><p className="muted">先测一下接口通不通，再看它支不支持向量（/embeddings）。支持的话，提问时会用语义去找相关记录；不支持就继续用关键词，不影响别的功能。</p><label className="field-label">向量模型<input placeholder="填写支持 /embeddings 的模型名；留空则用上面的模型名称" value={settings.embedModel || ''} onChange={event => setSettings(current => ({ ...current, embedModel: event.target.value }))}/></label><div className="button-row"><button className="secondary-button" onClick={() => void testConnection()}>测试连接</button><button className="secondary-button" disabled={vectorBusy || !modelReady} onClick={() => void buildVectors()}>{vectorBusy ? '正在生成向量……' : entries.length - vectorCount > 0 ? `为记录生成向量（还有 ${entries.length - vectorCount} 条）` : '为记录生成向量'}</button></div>{embedProbe && <p className={embedProbe.ok ? 'muted' : 'form-error'}>向量接口：{embedProbe.message}</p>}<p className="muted">已有 {vectorCount} / {entries.length} 条记录带向量。记录被修改或删除时，对应的向量会自动作废。</p></section><section className="settings-section"><h3>自动备份</h3><p className="muted">{backupMeta.lastExportAt ? `上次把数据带出设备是 ${new Date(backupMeta.lastExportAt).toLocaleString('zh-CN')}，共 ${backupMeta.lastExportCount ?? 0} 条。` : '还没有把数据带出过设备。数据只在这台设备上，换手机或清缓存都会丢。'}</p>{supportsAutoBackup() ? <div className="button-row"><button className="secondary-button" onClick={() => void authorizeAutoBackup()}>{backupMeta.autoDirName ? `换个目录（当前：${backupMeta.autoDirName}）` : '选一个目录自动备份'}</button>{backupMeta.autoDirName && <button className="secondary-button" onClick={() => void runAutoBackup()}>立即备份一次</button>}</div> : <p className="muted">这台设备不支持自动写入目录，请用「导出备份」存到网盘或文件里。</p>}{backupMeta.lastAutoAt && <p className="muted">自动备份最近一次：{new Date(backupMeta.lastAutoAt).toLocaleString('zh-CN')}。目录授权可能被浏览器回收，失效时会提示重新选择。</p>}</section>{keyboardDiag.length > 0 && <details className="settings-section"><summary>键盘与底栏诊断</summary><p className="muted">记录最近几次软键盘与底部导航的状态变化，用于真机排查，不影响正常使用。</p><ul className="diag-list">{keyboardDiag.map((entry, index) => <li key={index}><span>{new Date(entry.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>{entry.label}{entry.detail ? ` · ${entry.detail}` : ''}</li>)}</ul></details>}<details className="settings-section"><summary>数据管理与版本</summary><p className="muted">{VERSION} · 本机存储 · 不自动同步</p><button className="danger-button" onClick={() => { if (window.confirm('确认清空本机全部记录、事项与判断？请先导出备份。')) { void clearEverything(); } }}>清空本机数据</button><p className="muted">清空前会自动留一份快照，可以在「本机存储」里恢复。</p></details></Modal>}
-    {detailJudgment && (() => {
-      const item = detailJudgment!;
-      const supportEntries = item.supportIds.map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry));
-      const counterEntries = item.counterIds.map(id => entries.find(entry => entry.id === id)).filter((entry): entry is Entry => Boolean(entry));
-      const sortedSupport = [...supportEntries].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      const scopeStart = item.scopeStart || (sortedSupport.length ? dayOf(sortedSupport[0].createdAt) : '');
-      const scopeEnd = item.scopeEnd || (sortedSupport.length ? dayOf(sortedSupport[sortedSupport.length - 1].createdAt) : '');
-      return <Modal title="观察详情" onClose={() => setDetailJudgment(null)}>
-        <div className="obs-detail-head">
-          <div className="obs-badges"><span className="badge">{item.muted ? '已搁置' : judgmentStatusLabels[item.status]}</span>{item.type ? <span className="badge type-badge">{observationTypeLabels[item.type]}</span> : <span className="badge legacy-badge" title="v4.0 之前生成的观察没有类型、其他解释和推翻条件">旧观察</span>}{item.confidence && <span className="badge">{confidenceLabels[item.confidence]}</span>}</div>
-          <h3>{item.topic}</h3>
-          <p>{item.statement}</p>
-          <div className="obs-detail-meta"><span>{item.scopeEntries || item.supportIds.length} 条证据</span><span>{item.scopeDays || '—'} 个记录日</span>{scopeStart && <span>{dateLabel(scopeStart)} 至 {dateLabel(scopeEnd)}</span>}<span>上次核对 {item.lastReviewedAt ? dateLabel(dayOf(item.lastReviewedAt)) : '尚未核对'}</span>{item.nextReviewAt && <span>下次 {dateLabel(dayOf(item.nextReviewAt))}</span>}</div>
-        </div>
-        <section className="obs-section"><h4>支持证据</h4>{supportEntries.length ? supportEntries.map(entry => <blockquote className="obs-quote" key={entry.id}><time>{dateLabel(dayOf(entry.createdAt))}</time>{entry.content}</blockquote>) : <p className="muted">原始记录已删除，当前没有有效支持证据。</p>}</section>
-        <section className="obs-section"><h4>相反证据</h4>{counterEntries.length ? counterEntries.map(entry => <blockquote className="obs-quote" key={entry.id}><time>{dateLabel(dayOf(entry.createdAt))}</time>{entry.content}</blockquote>) : <p className="muted">没有找到明确的反例；这不等于反例不存在。</p>}</section>
-        <section className="obs-section"><h4>其他解释</h4><p className={item.alternative ? '' : 'muted'}>{item.alternative || '这条观察生成时还没有记录其他解释。可以点下面的“重新核对”，让 AI 补上其他解释和推翻条件。'}</p></section>
-        <section className="obs-section"><h4>什么会推翻它</h4><p className={item.falsifier ? '' : 'muted'}>{item.falsifier || '这条观察生成时还没有写推翻条件。可以点下面的“重新核对”补上；没有推翻条件时，只把它当作临时线索。'}</p></section>
-        <section className="obs-section"><h4>数据边界</h4><p className="muted">这只是你记录下来的部分，不等于全部生活；没有被记录的部分无法从这里推断。</p></section>
-        {!!item.corrections?.length && <section className="obs-section"><h4>你的纠正</h4>{item.corrections.map((correction, index) => <div className="obs-version" key={`${correction.at}-${index}`}><time>{new Date(correction.at).toLocaleString('zh-CN')}</time><p>{correction.reason}{correction.note ? `：${correction.note}` : ''}</p></div>)}</section>}
-        {revisionError && <p className="form-error">{revisionError}</p>}
-        {(!!item.versions?.length || !!item.version) && <section className="obs-section"><h4>版本历史</h4><div className="obs-version"><time>当前 v{item.version || 1}</time><p>{item.statement}</p></div>{(item.versions || []).map(version => <div className="obs-version" key={`${version.version}-${version.at}`}><time>v{version.version} · {new Date(version.at).toLocaleString('zh-CN')}</time><p>{version.topic}：{version.statement}</p></div>)}</section>}
-        {!correcting && !editingObservation && <div className="button-row">{item.status !== 'confirmed' && item.status !== 'withdrawn' && <button className="secondary-button" onClick={() => reviewObservation(item, 'confirmed')}>确认观察</button>}{item.status !== 'withdrawn' && <button className="quiet-button" onClick={() => reviewObservation(item, 'uncertain')}>暂不确定</button>}{item.status !== 'withdrawn' ? <button className="danger-button" onClick={() => reviewObservation(item, 'withdrawn')}>撤回</button> : <button className="quiet-button" onClick={() => restoreObservation(item)}>恢复待核对</button>}</div>}
-        {!correcting && !editingObservation && <div className="button-row"><button className="quiet-button" onClick={() => { setEditingObservation({ topic: item.topic, statement: item.statement }); setObservationEditError(''); }}>修改判断</button><button className="quiet-button" onClick={() => setCorrecting(true)}>记录纠正</button>{!item.muted && <button className="quiet-button" disabled={revisionBusy || !modelReady} onClick={() => void reviseObservation(item)}>{revisionBusy ? '正在重写……' : item.corrections?.length ? '按纠正重写' : item.type ? '重新核对' : '重新核对 · 补类型与推翻条件'}</button>}{item.muted && <button className="quiet-button" onClick={() => restoreObservation(item)}>恢复使用</button>}</div>}
-        {editingObservation && <section className="obs-section"><h4>修改判断</h4><label className="field-label">主题<input value={editingObservation.topic} onChange={event => setEditingObservation(current => current ? { ...current, topic: event.target.value } : current)}/></label><label className="field-label">判断<textarea rows={5} value={editingObservation.statement} onChange={event => setEditingObservation(current => current ? { ...current, statement: event.target.value } : current)}/></label>{observationEditError && <p className="form-error">{observationEditError}</p>}<div className="button-row"><button className="primary-button" onClick={saveObservationEdit}>保存修改</button><button className="quiet-button" onClick={() => setEditingObservation(null)}>取消</button></div></section>}
-        {correcting && <section className="obs-section"><h4>这条哪里不对</h4><div className="correction-reasons">{correctionReasons.map(reason => <button key={reason} className={`filter-chip ${correctionReason === reason ? 'active' : ''}`} onClick={() => setCorrectionReason(reason)}>{reason}</button>)}</div><label className="field-label">补充说明（可选）<textarea rows={3} value={correctionNote} onChange={event => setCorrectionNote(event.target.value)} placeholder="比如：那天的情况是……"/></label><div className="button-row"><button className="primary-button" disabled={!correctionReason} onClick={saveCorrection}>保存纠正</button><button className="quiet-button" onClick={() => setCorrecting(false)}>取消</button></div></section>}
-      </Modal>;
-    })()}
-    {showDigests && <Modal title="长期记忆" onClose={() => setShowDigests(false)}>
-      <p className="modal-intro">把更早的记录每周沉淀成一段简短记忆。原始记录仍完整保存在本机；AI 观察时只带这些记忆和最近 30 天原文，不会每次重读全部历史。</p>
-      <div className="digest-stats"><span>{digests.length} 段记忆</span><span>{sortedDigests.length ? `${shortDate(sortedDigests[sortedDigests.length - 1].start)} 至 ${shortDate(sortedDigests[0].end)}` : '暂无覆盖'}</span></div>
-      <div className="digest-actions">
-        <button className="primary-button" disabled={digestBusy || !modelReady || !nextDigestBatch.length} onClick={() => void updateDigests()}>{digestBusy ? '正在沉淀……' : nextDigestBatch.length ? `沉淀接下来 ${nextDigestBatch.length} 周` : '已经沉淀完'}</button>
-        {nextDigestBatch.length > 0 && <span className="muted">共 {digestEntryCount} 条记录 · {shortDate(nextDigestBatch[0].start)} 起</span>}
-      </div>
-      {digestProgress && <p className="loading-note">{digestProgress}</p>}
-      {!modelReady && <p className="muted">先在“偏好与数据”里连接模型。</p>}
-      {digestError && <p className="form-error">{digestError}</p>}
-      <div className="digest-list">
-        {sortedDigests.length ? sortedDigests.map(item => {
-          const stale = digestFreshness.get(item.id);
-          return <article className="digest-item" key={item.id}>
-            <header><time>{shortDate(item.start)}–{shortDate(item.end)}</time><span>{item.entryCount} 条</span></header>
-            <p>{item.summary}</p>
-            {!!item.themes.length && <div className="chip-row">{item.themes.map(theme => <span className="chip" key={theme}>{theme}</span>)}</div>}
-            <details><summary>变化、矛盾与证据</summary>
-              {item.changes && <p><b>变化：</b>{item.changes}</p>}
-              {item.contradictions && <p><b>矛盾：</b>{item.contradictions}</p>}
-              {item.evidence.map(evidence => <blockquote key={evidence.id}><time>{dateLabel(evidence.date)}</time>{evidence.text}</blockquote>)}
-              <p className="muted">生成于 {new Date(item.generatedAt).toLocaleString('zh-CN')} · {item.model}</p>
-            </details>
-            {stale && <p className="digest-stale"><Icon name="spark" size={13}/>{stale}</p>}
-            {redigestPending === item.id ? <div className="digest-confirm"><p>会用这一周现在的原文重新沉淀，并替换这段记忆。确认后不能撤销。</p><div className="button-row"><button className="primary-button" disabled={digestBusy} onClick={() => void redigestWeek(item.start)}>{digestBusy ? '正在沉淀……' : '确认重新沉淀'}</button><button className="quiet-button" onClick={() => setRedigestPending(null)}>取消</button></div></div>
-            : removeDigestPending === item.id ? <div className="digest-confirm"><p>只删除这段周记忆，原始记录不动。这一周之后会重新出现在“待沉淀”里。</p><div className="button-row"><button className="danger-button" onClick={() => removeDigest(item.id)}>确认删除这段记忆</button><button className="quiet-button" onClick={() => setRemoveDigestPending(null)}>取消</button></div></div>
-            : <div className="digest-item-actions"><button className="text-button" disabled={digestBusy || !modelReady} onClick={() => { setRedigestPending(item.id); setRemoveDigestPending(null); setDigestError(''); }}>{stale ? '重新沉淀' : '重做这一周'}</button><button className="text-button" disabled={digestBusy} onClick={() => { setRemoveDigestPending(item.id); setRedigestPending(null); setDigestError(''); }}>删除这段</button></div>}
-          </article>;
-        }) : <div className="empty-state"><p>还没有长期记忆。每次沉淀一周，几周后就能覆盖到更早的记录。</p></div>}
-      </div>
-    </Modal>}
-    {importOpen && <Modal title="恢复你的记忆" onClose={() => { setImportOpen(false); setImportPreview(null); }}><p className="modal-intro">从另一台手机带来的记录，可以在这里继续。</p>{!importPreview ? <><button className="upload-drop" onClick={() => fileRef.current?.click()}><Icon name="upload" size={27}/><strong>选择备份文件</strong><span>支持清醒导出的备份</span></button><details><summary>文件选择不可用？粘贴备份</summary><textarea rows={5} value={pasteBackup} placeholder="在这里粘贴完整备份内容" onChange={event => setPasteBackup(event.target.value)}/><button className="secondary-button" disabled={!pasteBackup.trim()} onClick={() => previewImport(pasteBackup)}>检查备份</button></details></> : <><div className="import-summary"><h3>已识别备份</h3><p>{importPreview.entries.length} 条记录 · {importPreview.tasks.length} 件事项 · {importPreview.judgments.length} 条观察{importPreview.digests.length ? ` · ${importPreview.digests.length} 段长期记忆` : ''}{importPreview.profile.length ? ` · ${importPreview.profile.length} 条「关于你」` : ''}</p>{importPreview.skipped > 0 && <p>跳过 {importPreview.skipped} 条无效数据</p>}</div><label className="import-option"><input type="radio" checked={importMode === 'merge'} onChange={() => setImportMode('merge')}/><span>合并到本机<small>保留原有内容，同编号记录采用较新版本。</small></span></label><label className="import-option"><input type="radio" checked={importMode === 'replace'} onChange={() => setImportMode('replace')}/><span>完整替换<small>当前设备数据将被备份覆盖，请先导出。</small></span></label><div className="button-row"><button className="quiet-button" onClick={() => setImportPreview(null)}>重新选择</button><button className="primary-button" onClick={confirmImport}>确认恢复</button></div></>}</Modal>}
-    <input ref={fileRef} type="file" accept="application/json,.json,text/plain" hidden onChange={async event => { const file = event.target.files?.[0]; if (file) { try { previewImport(await file.text()); } catch { setNotice('文件读取失败，请尝试粘贴备份。'); } } event.target.value = ''; }}/>
+    {detailJudgment && <ObservationModal
+      item={detailJudgment} entries={entries} modelReady={modelReady} revisionBusy={revisionBusy} revisionError={revisionError}
+      onReview={reviewObservation} onRestore={restoreObservation} onSaveCorrection={saveCorrection} onSaveEdit={saveObservationEdit} onRevise={item => void reviseObservation(item)}
+      onClose={() => setDetailJudgment(null)}
+    />}
+    {showDigests && <DigestModal
+      digests={digests} digestCount={digests.length} nextBatchCount={nextDigestBatch.length} nextBatchStart={nextDigestBatch[0]?.start} nextBatchEntries={digestEntryCount}
+      freshness={digestFreshness} busy={digestBusy} progress={digestProgress} error={digestError} modelReady={modelReady}
+      onUpdate={() => void updateDigests()} onRedigest={start => void redigestWeek(start)} onRemove={removeDigest}
+      onClose={() => setShowDigests(false)}
+    />}
+    {showSettings && <SettingsModal
+      settings={settings} setSettings={update => setSettings(update)} theme={theme} setTheme={setTheme}
+      backupMeta={backupMeta} backupText={backupText} supportsAuto={supportsAutoBackup()}
+      onExport={() => void exportData()} onOpenImport={() => { setShowSettings(false); setImportOpen(true); }}
+      onAuthorizeDir={() => void authorizeAutoBackup()} onRunAutoBackup={() => void runAutoBackup()}
+      storageInfo={storageInfo} snapshots={snapshots} journal={journal}
+      onSnapshot={() => void takeSnapshot('手动快照')} onRestoreSnapshot={id => void restoreSnapshotById(id)} onRemoveSnapshot={id => void removeSnapshot(id)}
+      onRestoreEntry={entry => void restoreDeletedEntry(entry)} onClearAll={() => void clearEverything()}
+      onTestConnection={() => void testConnection()} embedProbe={embedProbe}
+      vectorBusy={vectorBusy} vectorCount={vectorCount} entriesCount={entries.length} onBuildVectors={() => void buildVectors()}
+      autoBusy={autoBusy} onRunAutoPilot={() => void runAutoPilot()}
+      keyboardDiag={keyboardDiag} onClose={() => setShowSettings(false)}
+    />}
+    {importOpen && <ImportModal onImport={confirmImport} onClose={() => setImportOpen(false)}/>}
   </main>;
 }

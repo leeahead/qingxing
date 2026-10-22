@@ -2,7 +2,7 @@
 // 备份文件包含记录、事项、阶段性观察、每日总结与长期记忆，不包含访问密钥。
 // 校验集中在这里，界面只负责给出人话提示。
 
-import type { DailySummary, Entry, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, ProfileItem, Store, Task, Theme } from './types';
+import type { DailySummary, Entry, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, ProfileItem, Store, SummaryInsight, Task, Theme, ThreadNote } from './types';
 import { SCHEMA_VERSION, today, validDate } from './utils';
 
 /** 导出成备份文本。 */
@@ -29,9 +29,27 @@ export function parseBackupText(text: string): { store: Store; skipped: number }
       muted: Boolean(item.muted),
     })),
     memoryFeedback: raw.memoryFeedback && typeof raw.memoryFeedback === 'object' ? raw.memoryFeedback : {},
-    summaries: (Array.isArray(raw.summaries) ? raw.summaries : []).filter((item: DailySummary) => item && typeof item.day === 'string' && typeof item.repeated === 'string' && typeof item.tomorrow === 'string' && validDate(item.generatedAt)),
+    // 总结跨了三代结构（v4 五栏 / v4.5 概要 / v5 回望），逐字段清洗，缺哪个都照常导入。
+    summaries: (Array.isArray(raw.summaries) ? raw.summaries : []).filter((item: DailySummary) => item && typeof item.day === 'string' && validDate(item.generatedAt)).map((item: DailySummary) => ({
+      day: item.day,
+      generatedAt: item.generatedAt,
+      model: String(item.model || ''),
+      entryCount: Number(item.entryCount) || 0,
+      sourceIds: Array.isArray(item.sourceIds) ? item.sourceIds.map(String) : [],
+      ...(typeof item.overview === 'string' && item.overview ? { overview: item.overview } : {}),
+      ...(typeof item.title === 'string' && item.title ? { title: item.title } : {}),
+      ...(typeof item.question === 'string' && item.question ? { question: item.question } : {}),
+      ...(Array.isArray(item.insights) ? { insights: item.insights.filter((insight: SummaryInsight) => insight && typeof insight.text === 'string' && Array.isArray(insight.sourceIds)).map((insight: SummaryInsight) => ({ text: insight.text, sourceIds: insight.sourceIds.map(String), ...(insight.kind ? { kind: insight.kind } : {}) })) } : {}),
+      ...(typeof item.repeated === 'string' ? { repeated: item.repeated } : {}),
+      ...(typeof item.unresolved === 'string' ? { unresolved: item.unresolved } : {}),
+      ...(typeof item.connections === 'string' ? { connections: item.connections } : {}),
+      ...(typeof item.emotion === 'string' ? { emotion: item.emotion } : {}),
+      ...(typeof item.tomorrow === 'string' ? { tomorrow: item.tomorrow } : {}),
+    })),
     digests: (Array.isArray(raw.digests) ? raw.digests : []).filter((item: MemoryDigest) => item && typeof item.id === 'string' && validDate(item.start) && validDate(item.end) && typeof item.summary === 'string' && validDate(item.generatedAt)).map((item: MemoryDigest) => ({
       ...item,
+      title: typeof item.title === 'string' ? item.title : undefined,
+      watch: typeof item.watch === 'string' ? item.watch : undefined,
       themes: Array.isArray(item.themes) ? item.themes.map(String) : [],
       changes: String(item.changes || ''),
       contradictions: String(item.contradictions || ''),
@@ -44,6 +62,18 @@ export function parseBackupText(text: string): { store: Store; skipped: number }
       evidenceIds: Array.isArray(item.evidenceIds) ? item.evidenceIds.map(String) : [],
       source: item.source === 'ai' ? 'ai' : 'user',
       confirmed: Boolean(item.confirmed),
+    })),
+    // 线索笔记是 v9 才有的；旧备份没有这一项，按空处理。线索本身每次由本地重新计算。
+    threadNotes: (Array.isArray(raw.threadNotes) ? raw.threadNotes : []).filter((item: ThreadNote) => item && typeof item.id === 'string' && typeof item.topic === 'string' && typeof item.summary === 'string' && validDate(item.generatedAt)).map((item: ThreadNote) => ({
+      id: item.id,
+      topic: item.topic,
+      summary: item.summary,
+      turning: typeof item.turning === 'string' ? item.turning : undefined,
+      openQuestion: typeof item.openQuestion === 'string' ? item.openQuestion : undefined,
+      sourceIds: Array.isArray(item.sourceIds) ? item.sourceIds.map(String) : [],
+      entryCount: Number(item.entryCount) || 0,
+      generatedAt: item.generatedAt,
+      model: String(item.model || ''),
     })),
   };
   const skipped = raw.entries.length + raw.tasks.length - store.entries.length - store.tasks.length;
@@ -65,6 +95,7 @@ export function mergeStores(current: Store, incoming: Store): Store {
     summaries: [...new Map([...current.summaries, ...incoming.summaries].map(item => [item.day, item])).values()],
     digests: byId(current.digests, incoming.digests),
     profile: byId(current.profile, incoming.profile),
+    threadNotes: byId(current.threadNotes, incoming.threadNotes),
   };
 }
 
