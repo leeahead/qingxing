@@ -135,10 +135,7 @@ export function readMirrorState(): PersistedState | null {
       Object.entries(keys).map(([name, key]) => [name, JSON.parse(localStorage.getItem(key) || (name === 'memoryFeedback' ? '{}' : '[]'))]),
     ) as Store;
     if (!Array.isArray(loaded.entries) || !Array.isArray(loaded.tasks) || !Array.isArray(loaded.judgments)) return null;
-    if (!Array.isArray(loaded.summaries)) loaded.summaries = [];
-    if (!Array.isArray(loaded.digests)) loaded.digests = [];
-    if (!Array.isArray(loaded.profile)) loaded.profile = [];
-    if (!Array.isArray(loaded.threadNotes)) loaded.threadNotes = [];
+    normalizeStore(loaded);
     const settings = { baseUrl: '', apiKey: '', model: '', ...JSON.parse(localStorage.getItem('qingxing.settings.v1') || '{}') } as Settings;
     const savedTheme = localStorage.getItem('qingxing.theme.v1');
     const theme: Theme = savedTheme === 'light' || savedTheme === 'mono' ? 'light' : 'dark';
@@ -163,14 +160,30 @@ export function writeMirrorState(state: PersistedState): boolean {
 
 /* ------------------------------ 主存读写 ------------------------------ */
 
+/**
+ * 补齐 Store 里后来才新增的数组字段。
+ * 老设备的主存与旧快照里没有 threadNotes / profile，读出来不补一下，
+ * 界面拿到的就是 undefined，回看页一渲染 `threadNotes.find(...)` 直接崩。
+ */
+export function normalizeStore(store: Store): Store {
+  if (!Array.isArray(store.entries)) store.entries = [];
+  if (!Array.isArray(store.tasks)) store.tasks = [];
+  if (!Array.isArray(store.judgments)) store.judgments = [];
+  if (!store.memoryFeedback || typeof store.memoryFeedback !== 'object') store.memoryFeedback = {};
+  if (!Array.isArray(store.summaries)) store.summaries = [];
+  if (!Array.isArray(store.digests)) store.digests = [];
+  if (!Array.isArray(store.profile)) store.profile = [];
+  if (!Array.isArray(store.threadNotes)) store.threadNotes = [];
+  return store;
+}
+
 export async function readState(): Promise<PersistedState | null> {
   const db = await openDatabase();
   if (!db) return null;
   try {
     const row = await dbGet<{ key: string; state: PersistedState }>(db, STORE_STATE, STATE_KEY);
     if (!row?.state?.store?.entries) return null;
-    const store = row.state.store;
-    if (!Array.isArray(store.profile)) store.profile = [];
+    normalizeStore(row.state.store);
     return row.state;
   } catch (error) {
     noteError(error);
@@ -259,7 +272,9 @@ export async function readSnapshot(id: string): Promise<Snapshot | null> {
   if (!db) return null;
   try {
     const row = await dbGet<Snapshot>(db, STORE_SNAPSHOTS, id);
-    return row ?? null;
+    if (!row?.state?.store) return row ?? null;
+    normalizeStore(row.state.store);
+    return row;
   } catch (error) {
     noteError(error);
     return null;

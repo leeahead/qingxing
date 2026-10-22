@@ -3,7 +3,7 @@
 
 import type { ObservationType } from './types';
 
-export const VERSION = '5.1 · 记忆会自己长出来';
+export const VERSION = '5.1.1 · 记忆会自己长出来';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
