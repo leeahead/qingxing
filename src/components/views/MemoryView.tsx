@@ -1,69 +1,69 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { DailySummary, Entry, Judgment, MemoryDigest, ProfileItem, Task, ThreadNote } from '@/lib/types';
+import type { DailySummary, Entry, MemoryDigest, ProfileItem, Task, ThreadNote } from '@/lib/types';
 import type { EntryThread } from '@/lib/threads';
-import { addDays, confidenceLabels, dateLabel, dayOf, judgmentStatusLabels, observationTypeLabels, shortDate, threadTrendLabels, today } from '@/lib/utils';
+import type { DayMemory } from '@/lib/threads';
+import { dateLabel, dayOf, daysAgo, shortDate, threadTrendLabels, today } from '@/lib/utils';
 import { EntryCard } from '@/components/EntryCard';
+import type { EntryEcho } from '@/components/EntryCard';
 import { Icon } from '@/components/Icon';
 import { SummaryCard } from '@/components/SummaryCard';
 
-export type ReviewViewProps = {
+export type MemoryViewProps = {
   entries: Entry[];
   counts: Map<string, number>;
-  judgments: Judgment[];
-  observationReviewFlags: Map<string, boolean>;
-  openObservation: (item: Judgment) => void;
-  observationBusy: boolean;
-  observationError: string;
-  observationScopeCount: number;
-  generateObservations: () => void;
-  modelReady: boolean;
-  digests: MemoryDigest[];
-  uncoveredWeekCount: number;
-  onOpenDigests: () => void;
-  profile: ProfileItem[];
-  onOpenProfile: () => void;
+  todaysEntries: Entry[];
+  echoes: Map<string, EntryEcho>;
+  streak: number;
   summaryFor: (day: string) => DailySummary | undefined;
   generateSummary: (day: string) => void;
   summaryBusy: boolean;
   summaryError: string;
+  modelReady: boolean;
+  onAddTask: (title: string) => void;
   openActions: (entry: Entry) => void;
-  searchEntries: (query: string) => Promise<Entry[]>;
-  tab: 'main' | 'timeline';
-  setTab: (tab: 'main' | 'timeline') => void;
-  /** 从别处（回响、引用）跳进来时指定要看的那一天 */
-  focusDay: string | null;
-  onFocusDayConsumed: () => void;
   tasks: Task[];
   setStatus: (id: string, status: Task['status']) => void;
-  /** 本地算出的反复话题 */
+  thisDay: DayMemory[];
   threads: EntryThread[];
-  /** 已经串过的线索笔记，按 topic 缓存 */
   threadNotes: ThreadNote[];
   focusThread: string | null;
   onFocusThreadConsumed: () => void;
   onGenerateThread: (topic: string) => void;
   threadBusy: boolean;
   threadError: string;
+  profile: ProfileItem[];
+  onOpenProfile: () => void;
+  searchEntries: (query: string) => Promise<Entry[]>;
+  tab: 'main' | 'timeline';
+  setTab: (tab: 'main' | 'timeline') => void;
+  focusDay: string | null;
+  onFocusDayConsumed: () => void;
+  onOpenDay: (day: string) => void;
+  /** 旧版观察与周沉淀的条数；只在「旧数据存档」里出现 */
+  legacyCount: number;
+  legacyDigestCount: number;
+  onOpenArchive: () => void;
 };
 
-type Filter = 'all' | 'review' | 'candidate' | 'confirmed' | 'archived';
-
 /**
- * 回看页：今天之外的所有「重新看一遍」都在这里。
- * 主层是观察与入口；时间线（热力图 / 月历 / 搜索 / 按天详情）是一个子层，不占导航。
+ * 记忆页：说过的话都在这里。
+ * 洞察流不再给用户看原文，所以这一页要能顺畅地回到原话——
+ * 今天的记录与回响、事项、每日回望、线索、时间线（热力图 / 月历 / 搜索 / 按天详情）。
  */
-export function ReviewView(props: ReviewViewProps) {
-  const { entries, counts, judgments, observationReviewFlags, openObservation, observationBusy, observationError, observationScopeCount, generateObservations, modelReady, digests, uncoveredWeekCount, onOpenDigests, profile, onOpenProfile, summaryFor, generateSummary, summaryBusy, summaryError, openActions, searchEntries, tab, setTab, focusDay, onFocusDayConsumed, tasks, setStatus, threads, threadNotes, focusThread, onFocusThreadConsumed, onGenerateThread, threadBusy, threadError } = props;
-  const [filter, setFilter] = useState<Filter>('all');
+export function MemoryView(props: MemoryViewProps) {
+  const {
+    entries, counts, todaysEntries, echoes, streak, summaryFor, generateSummary, summaryBusy, summaryError, modelReady, onAddTask,
+    openActions, tasks, setStatus, thisDay, threads, threadNotes, focusThread, onFocusThreadConsumed, onGenerateThread, threadBusy, threadError,
+    profile, onOpenProfile, searchEntries, tab, setTab, focusDay, onFocusDayConsumed, onOpenDay, legacyCount, legacyDigestCount, onOpenArchive,
+  } = props;
   const [month, setMonth] = useState(today().slice(0, 7));
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Entry[] | null>(null);
   const [searching, setSearching] = useState(false);
-  const [taskTab, setTaskTab] = useState(false);
 
   useEffect(() => {
     if (!focusDay) return;
@@ -85,21 +85,6 @@ export function ReviewView(props: ReviewViewProps) {
 
   useEffect(() => { if (tab === 'timeline') setSelectedThread(null); }, [tab]);
 
-  const visible = useMemo(() => {
-    const list = judgments.filter(item => {
-      if (filter === 'all') return true;
-      if (filter === 'candidate') return item.status === 'candidate';
-      if (filter === 'confirmed') return item.status === 'confirmed';
-      if (filter === 'archived') return item.status === 'withdrawn' || !!item.muted;
-      return observationReviewFlags.get(item.id) === true;
-    });
-    return [...list].sort((a, b) => Number(observationReviewFlags.get(b.id) || 0) - Number(observationReviewFlags.get(a.id) || 0) || b.updatedAt.localeCompare(a.updatedAt));
-  }, [judgments, filter, observationReviewFlags]);
-  const stats = useMemo(() => ({
-    review: judgments.filter(item => observationReviewFlags.get(item.id)).length,
-    active: judgments.filter(item => item.status !== 'withdrawn' && !item.muted).length,
-  }), [judgments, observationReviewFlags]);
-
   const heatDays = useMemo(() => {
     const start = new Date(`${today()}T12:00:00`);
     start.setDate(start.getDate() - 97);
@@ -116,6 +101,7 @@ export function ReviewView(props: ReviewViewProps) {
   const activeThreadNote = selectedThread ? threadNotes.find(note => note.topic === selectedThread) : undefined;
   const threadEntryIds = new Set(activeThread?.entryIds ?? activeThreadNote?.sourceIds ?? []);
   const activeThreadEntries = entries.filter(entry => threadEntryIds.has(entry.id)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const activeTasks = tasks.filter(task => task.status === 'open' || task.status === 'deferred');
 
   function changeMonth(delta: number) {
     const [year, number] = month.split('-').map(Number);
@@ -132,7 +118,7 @@ export function ReviewView(props: ReviewViewProps) {
 
   /* ── 线索子层：同一个话题按时间串起来 ── */
   if (tab === 'main' && selectedThread) return <div className="content-column thread-page">
-    <button className="back-row" onClick={() => setSelectedThread(null)}><Icon name="back" size={17}/>返回回看</button>
+    <button className="back-row" onClick={() => setSelectedThread(null)}><Icon name="back" size={17}/>返回记忆</button>
     <header className="page-heading">
       <span className="eyebrow">一条反复出现的线{activeThread ? ` · ${activeThread.count} 条 · 跨 ${activeThread.days.length} 个记录日` : ''}</span>
       <h1>{selectedThread}</h1>
@@ -173,7 +159,7 @@ export function ReviewView(props: ReviewViewProps) {
       <div className="entry-list">{selectedEntries.map(entry => <EntryCard key={entry.id} entry={entry} onOpen={openActions}/>)}</div>
     </div>;
     return <div className="content-column timeline-page">
-      <button className="back-row" onClick={() => setTab('main')}><Icon name="back" size={17}/>返回回看</button>
+      <button className="back-row" onClick={() => setTab('main')}><Icon name="back" size={17}/>返回记忆</button>
       <header className="page-heading"><span className="eyebrow">{entries.length} 条记录都在</span><h1>以往的日子</h1></header>
       <form className="search-row card" onSubmit={event => { event.preventDefault(); void runSearch(); }}>
         <Icon name="search" size={17}/>
@@ -182,7 +168,7 @@ export function ReviewView(props: ReviewViewProps) {
       </form>
       {results && <section className="search-results">
         <div className="section-heading"><h3>找到 {results.length} 条</h3><button className="text-button" onClick={() => setResults(null)}>清除</button></div>
-        {results.length ? <div className="entry-list">{results.slice(0, 30).map(entry => <EntryCard key={entry.id} entry={entry} onOpen={openActions}/>)}</div> : <p className="muted">没有找到。换个词，或问「提问」页。</p>}
+        {results.length ? <div className="entry-list">{results.slice(0, 30).map(entry => <EntryCard key={entry.id} entry={entry} onOpen={openActions}/>)}</div> : <p className="muted">没有找到。换个词试试。</p>}
       </section>}
       {!results && <>
         <section className="heat-section card">
@@ -220,21 +206,56 @@ export function ReviewView(props: ReviewViewProps) {
     </div>;
   }
 
-  /* ── 主层：观察与入口 ── */
+  /* ── 主层：今天、事项、线索、入口 ── */
+  const hour = new Date().getHours();
+  const showSummary = Boolean(summaryFor(today())) || hour >= 20 || todaysEntries.length >= 5;
   const pendingProfile = profile.filter(item => !item.confirmed).length;
-  const openTasks = tasks.filter(task => task.status === 'open' || task.status === 'deferred');
-  return <div className="content-column review-page">
+  return <div className="content-column memory-page">
     <header className="page-heading">
-      <span className="eyebrow">说过的话不会消失</span>
-      <h1>回看</h1>
-      <p>AI 的观察只是候选，你确认过才算数。</p>
+      <span className="eyebrow">{dateLabel(today())} · {entries.length} 条记录{streak >= 2 ? ` · 连续 ${streak} 天` : ''}</span>
+      <h1>记忆</h1>
+      <p>它说的那些话是猜的；这里是你自己说过的。</p>
     </header>
 
     <div className="entry-chips">
       <button className="entry-chip card" onClick={onOpenProfile}><Icon name="check" size={16}/><span>关于你<b>{profile.filter(item => item.confirmed).length} 条</b></span>{pendingProfile > 0 && <i className="chip-dot">{pendingProfile} 待确认</i>}</button>
-      <button className="entry-chip card" onClick={onOpenDigests}><Icon name="calendar" size={16}/><span>长期记忆<b>{digests.length} 段</b></span>{uncoveredWeekCount > 0 && <i className="chip-dot">{uncoveredWeekCount} 周待沉淀</i>}</button>
       <button className="entry-chip card" onClick={() => setTab('timeline')}><Icon name="search" size={16}/><span>以往的日子<b>时间线</b></span></button>
+      {(legacyCount > 0 || legacyDigestCount > 0) && <button className="entry-chip card" onClick={onOpenArchive}><Icon name="more" size={16}/><span>旧数据存档<b>{legacyCount + legacyDigestCount} 条</b></span></button>}
     </div>
+
+    {!!thisDay.length && <section className="this-day card">
+      <div className="section-heading"><h3>往年今天</h3><span className="muted">记忆自己走回来</span></div>
+      {thisDay.map(({ entry, label }) => <button className="this-day-item" key={entry.id} onClick={() => onOpenDay(dayOf(entry.createdAt))}>
+        <time>{label} · {dateLabel(dayOf(entry.createdAt))}</time>
+        <p>{entry.content.length > 96 ? `${entry.content.slice(0, 96)}…` : entry.content}</p>
+      </button>)}
+    </section>}
+
+    {!!activeTasks.length && <section className="task-strip card">
+      <div className="section-heading"><h3>还开着的事 · {activeTasks.length}</h3><span className="muted">处理掉一件就少一件</span></div>
+      <div className="task-rows">
+        {activeTasks.slice(0, 4).map(task => {
+          const age = daysAgo(task.createdAt);
+          return <div className="task-row" key={task.id}>
+            <button className="task-check" aria-label="完成" onClick={() => setStatus(task.id, 'done')}><Icon name="check" size={15}/></button>
+            <span className="task-title" title={task.title}>{task.title}</span>
+            {age >= 3 && <span className="task-age">{age} 天</span>}
+            <button className="text-button" onClick={() => setStatus(task.id, 'dropped')}>放下</button>
+            <button className="text-button" onClick={() => setStatus(task.id, 'deferred')}>以后</button>
+          </div>;
+        })}
+      </div>
+      {activeTasks.length > 4 && <p className="muted">还有 {activeTasks.length - 4} 件在下面的事项板里。</p>}
+    </section>}
+
+    {showSummary && <SummaryCard compact day={today()} summary={summaryFor(today())} entries={entries} entryCount={todaysEntries.length} busy={summaryBusy} error={summaryError} modelReady={modelReady} onGenerate={() => generateSummary(today())} onAddTask={onAddTask}/>}
+
+    <section className="today-flow">
+      <div className="section-heading"><h3>今天的记录</h3><span className="muted">{todaysEntries.length} 条</span></div>
+      {todaysEntries.length ? <div className="entry-list">
+        {todaysEntries.map(entry => <EntryCard key={entry.id} entry={entry} echo={echoes.get(entry.id)} onOpen={openActions} onEchoOpen={onOpenDay}/>)}
+      </div> : <div className="empty-state card"><p>今天还没有记录。</p><p className="muted">在首页最上面那条框里写。写下来的东西不会消失，会在合适的时候回来找你。</p></div>}
+    </section>
 
     {!!threads.length && <section className="thread-section-main">
       <div className="section-heading"><h3>记忆里的线索</h3><span className="muted">{threadNotes.length ? `${threadNotes.length} 条已经串过` : '点一条，把散落的记录连起来'}</span></div>
@@ -250,50 +271,14 @@ export function ReviewView(props: ReviewViewProps) {
       </div>
     </section>}
 
-    <section className="obs-section-main">
-      <div className="section-heading">
-        <h3>阶段性观察{stats.active ? ` · ${stats.active} 条活跃` : ''}</h3>
-        <button className="secondary-button" disabled={observationBusy || !modelReady} onClick={generateObservations}>{observationBusy ? 'AI 正在读……' : `让 AI 读最近 ${observationScopeCount} 条`}</button>
-      </div>
-      {observationError && <p className="form-error">{observationError}</p>}
-      <div className="filter-row" role="group" aria-label="筛选观察">
-        {([['all', '全部'], ['review', `需重看${stats.review ? ` ${stats.review}` : ''}`], ['candidate', '待核对'], ['confirmed', '已确认'], ['archived', '已归档']] as [Filter, string][]).map(([value, label]) => <button key={value} className={`filter-chip${filter === value ? ' active' : ''}`} onClick={() => setFilter(value)}>{label}</button>)}
-      </div>
-      {visible.length ? <div className="obs-list">
-        {visible.map(item => {
-          const needsReview = observationReviewFlags.get(item.id);
-          return <article className="obs-card card" key={item.id} role="button" tabIndex={0} onClick={() => openObservation(item)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openObservation(item); } }}>
-            <header>
-              {item.type ? <span className="badge type-badge">{observationTypeLabels[item.type]}</span> : <span className="badge legacy-badge">旧观察</span>}
-              <span className={`badge status-badge status-${item.status}`}>{item.muted ? '已搁置' : judgmentStatusLabels[item.status]}</span>
-              {needsReview && item.status !== 'withdrawn' && !item.muted && <span className="badge review-badge">需重看</span>}
-            </header>
-            <h4>{item.topic}</h4>
-            <p>{item.statement}</p>
-            <footer>
-              <span>证据 {item.supportIds.length}</span>
-              {!!item.counterIds.length && <span>反例 {item.counterIds.length}</span>}
-              {item.confidence && <span>{confidenceLabels[item.confidence]}</span>}
-              {item.nextReviewAt && item.status !== 'withdrawn' && <span>核对 {shortDate(item.nextReviewAt)}</span>}
-            </footer>
-          </article>;
-        })}
-      </div> : <div className="empty-state card">
-        <p>{judgments.length ? '这个筛选下没有观察。' : '还没有观察。'}</p>
-        <p className="muted">{judgments.length ? '换个筛选看看。' : modelReady ? `记录积累几天后，让 AI 读一遍最近 ${observationScopeCount} 条，找值得回看的模式。它给的每条都必须挂你的原话，你可以随时纠正或撤回。` : '连接模型后，AI 可以定期读你的记录，提出值得回看的观察。'}</p>
-      </div>}
-    </section>
-
-    {!!openTasks.length && <section className="task-section">
-      <div className="section-heading"><h3>事项 · {openTasks.length} 件还开着</h3><button className="text-button" onClick={() => setTaskTab(current => !current)}>{taskTab ? '收起' : '全部处理'}</button></div>
-      {taskTab && <TaskBoard tasks={tasks} openActions={openActions} setStatus={setStatus} entries={entries}/>}
-    </section>}
+    <TaskBoard tasks={tasks} openActions={openActions} setStatus={setStatus} entries={entries}/>
   </div>;
 }
 
 /** 完整事项板：四个状态都能改，每条都能回到原文。 */
 function TaskBoard({ tasks, setStatus, openActions, entries }: { tasks: Task[]; setStatus: (id: string, status: Task['status']) => void; openActions: (entry: Entry) => void; entries: Entry[] }) {
   const groups: [Task['status'], string][] = [['open', '待处理'], ['deferred', '以后处理'], ['done', '已经完成'], ['dropped', '已经放下']];
+  if (!tasks.length) return null;
   return <div className="task-board">
     {groups.map(([status, label]) => {
       const list = tasks.filter(task => task.status === status);

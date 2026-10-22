@@ -9,8 +9,8 @@
 // 全部函数都不抛错：IndexedDB 不可用（隐私模式、旧 WebView、配额被拒）时自动退回 localStorage，
 // 应用照常能用，只是容量回到 5MB。
 
-import type { BackupMeta, Entry, Settings, Store, Theme } from './types';
-import { keys, uid } from './utils';
+import type { BackupMeta, Entry, Settings, Store, Theme, UserProfile } from './types';
+import { keys, uid, validDate } from './utils';
 
 const BACKUP_META_KEY = 'qingxing.backup.v1';
 const DIR_HANDLE_KEY = 'backupDir';
@@ -36,6 +36,7 @@ export type JournalKind =
   | 'judgment.created' | 'judgment.updated'
   | 'summary.generated' | 'digest.generated'
   | 'profile.updated'
+  | 'insight.generated' | 'insight.feedback' | 'profile.rebuilt' | 'archive.removed'
   | 'state.restored' | 'state.cleared';
 
 export type JournalEvent = {
@@ -55,6 +56,7 @@ export type StorageStatus = {
   entries: number;
   tasks: number;
   judgments: number;
+  insights: number;
   journal: number;
   snapshots: number;
   usage?: number;
@@ -150,7 +152,10 @@ export function readMirrorState(): PersistedState | null {
 /** 写一份 localStorage 镜像。IndexedDB 不可用时，这就是唯一的数据落点。 */
 export function writeMirrorState(state: PersistedState): boolean {
   try {
-    for (const [name, key] of Object.entries(keys)) localStorage.setItem(key, JSON.stringify(state.store[name as keyof Store]));
+    // 先补齐字段：某个新字段在这台设备上还是 undefined 时，
+    // JSON.stringify 会得到 "undefined"，下一轮读镜像直接解析失败，整份镜像就废了。
+    const store = normalizeStore(state.store);
+    for (const [name, key] of Object.entries(keys)) localStorage.setItem(key, JSON.stringify(store[name as keyof Store] ?? (name === 'userProfile' ? null : name === 'memoryFeedback' ? {} : [])));
     localStorage.setItem('qingxing.settings.v1', JSON.stringify(state.settings));
     localStorage.setItem('qingxing.theme.v1', state.theme);
     return true;
@@ -179,9 +184,10 @@ export function readMirrorSettings(): Partial<Settings> {
 /* ------------------------------ 主存读写 ------------------------------ */
 
 /**
- * 补齐 Store 里后来才新增的数组字段。
- * 老设备的主存与旧快照里没有 threadNotes / profile，读出来不补一下，
- * 界面拿到的就是 undefined，回看页一渲染 `threadNotes.find(...)` 直接崩。
+ * 补齐 Store 里后来才新增的字段。
+ * 老设备的主存与旧快照里没有 threadNotes / insights / scenes，读出来不补一下，
+ * 界面拿到的就是 undefined，某个页面一渲染 `.length` 直接崩（v5.1.1 就是这么白屏的）。
+ * 画像层是对象而不是数组，缺失或形状不对时统一按 null 处理。
  */
 export function normalizeStore(store: Store): Store {
   if (!Array.isArray(store.entries)) store.entries = [];
@@ -192,6 +198,14 @@ export function normalizeStore(store: Store): Store {
   if (!Array.isArray(store.digests)) store.digests = [];
   if (!Array.isArray(store.profile)) store.profile = [];
   if (!Array.isArray(store.threadNotes)) store.threadNotes = [];
+  if (!Array.isArray(store.insights)) store.insights = [];
+  if (!Array.isArray(store.scenes)) store.scenes = [];
+  if (!Array.isArray(store.runs)) store.runs = [];
+  if (!Array.isArray(store.profileVersions)) store.profileVersions = [];
+  const profile = store.userProfile as UserProfile | null | undefined;
+  store.userProfile = profile && typeof profile === 'object' && typeof profile.narrative === 'string'
+    ? { ...profile, version: Number(profile.version) || 1, updatedAt: validDate(profile.updatedAt) ? profile.updatedAt : new Date().toISOString(), patterns: profile.patterns || [], values: profile.values || [], tensions: profile.tensions || [], currentThemes: profile.currentThemes || [] }
+    : null;
   return store;
 }
 
@@ -402,6 +416,7 @@ export async function storageStatus(state: PersistedState | null): Promise<Stora
     entries: state?.store.entries.length ?? 0,
     tasks: state?.store.tasks.length ?? 0,
     judgments: state?.store.judgments.length ?? 0,
+    insights: state?.store.insights.length ?? 0,
     journal,
     snapshots,
     usage,

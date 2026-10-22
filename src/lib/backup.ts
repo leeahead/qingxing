@@ -1,8 +1,8 @@
 // 备份的导出、校验与合并。
-// 备份文件包含记录、事项、阶段性观察、每日总结与长期记忆，不包含访问密钥。
+// 备份文件包含记录、事项、洞察、画像、场景、每日回望与旧版数据，不包含访问密钥。
 // 校验集中在这里，界面只负责给出人话提示。
 
-import type { DailySummary, Entry, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, ProfileItem, Store, SummaryInsight, Task, Theme, ThreadNote } from './types';
+import type { DailySummary, Entry, Insight, InsightRun, Judgment, MemoryDigest, MemoryEvidence, ObservationCorrection, ObservationVersion, ProfileItem, Scene, Store, SummaryInsight, Task, Theme, ThreadNote, UserProfile } from './types';
 import { SCHEMA_VERSION, today, validDate } from './utils';
 
 /** 导出成备份文本。 */
@@ -10,10 +10,17 @@ export function buildBackupText(data: Store, theme: Theme): string {
   return JSON.stringify({ app: 'qingxing', schemaVersion: SCHEMA_VERSION, exportedAt: new Date().toISOString(), ...data, theme }, null, 2);
 }
 
+/** 洞察流的置信度只有两种；备份里出现别的值就按「有待验证」处理。 */
+const confidenceOf = (value: unknown): Insight['confidence'] => (value === 'grounded' ? 'grounded' : 'speculative');
+
 /**
  * 解析并校验备份文本。
  * 只接受清醒的备份格式；缺字段、类型不对的条目直接丢掉，不让脏数据进来。
  * 返回通过校验的数据，以及被丢弃的条目数量。
+ *
+ * v10 是洞察流：新增 insights / userProfile / profileVersions / scenes / runs。
+ * 旧备份（v6~v9）没有这些字段，按空处理；它们的观察与周沉淀读进来后只进「旧数据存档」，
+ * 界面不再展示，也不会凭空丢掉用户已经攒下的东西。
  */
 export function parseBackupText(text: string): { store: Store; skipped: number } {
   const raw = JSON.parse(text);
@@ -21,6 +28,7 @@ export function parseBackupText(text: string): { store: Store; skipped: number }
   const store: Store = {
     entries: raw.entries.filter((item: Entry) => item && typeof item.id === 'string' && typeof item.content === 'string' && validDate(item.createdAt) && validDate(item.updatedAt)),
     tasks: raw.tasks.filter((item: Task) => item && typeof item.id === 'string' && typeof item.title === 'string' && validDate(item.createdAt) && typeof item.sourceId === 'string' && ['open', 'done', 'deferred', 'dropped'].includes(item.status)),
+    // 旧版阶段性观察：v6.0 起不再展示，仍然完整收下，用户可以在「旧数据存档」里浏览或导出。
     judgments: (Array.isArray(raw.judgments) ? raw.judgments : []).filter((item: Judgment) => item && typeof item.id === 'string' && typeof item.topic === 'string' && typeof item.statement === 'string' && Array.isArray(item.supportIds) && Array.isArray(item.counterIds) && validDate(item.createdAt) && validDate(item.updatedAt) && ['candidate', 'confirmed', 'uncertain', 'withdrawn'].includes(item.status)).map((item: Judgment) => ({
       ...item,
       type: ['pattern', 'change', 'tension', 'question', 'hypothesis'].includes(item.type as string) ? item.type : undefined,
@@ -75,14 +83,65 @@ export function parseBackupText(text: string): { store: Store; skipped: number }
       generatedAt: item.generatedAt,
       model: String(item.model || ''),
     })),
+    // ── 以下四项是 v10 洞察流的数据；v6~v9 的备份里没有，按空处理 ──
+    insights: (Array.isArray(raw.insights) ? raw.insights : []).filter((item: Insight) => item && typeof item.id === 'string' && typeof item.content === 'string' && validDate(item.createdAt)).map((item: Insight) => ({
+      id: item.id,
+      content: item.content.slice(0, 120),
+      confidence: confidenceOf(item.confidence),
+      createdAt: item.createdAt,
+      feedback: item.feedback === 'positive' || item.feedback === 'negative' ? item.feedback : null,
+      direction: typeof item.direction === 'string' ? item.direction.slice(0, 12) : undefined,
+      profileVersion: Number(item.profileVersion) || undefined,
+    })),
+    userProfile: readProfile(raw.userProfile),
+    profileVersions: (Array.isArray(raw.profileVersions) ? raw.profileVersions : []).map((item: unknown) => readProfile(item)).filter((item: UserProfile | null): item is UserProfile => Boolean(item)).slice(-12),
+    scenes: (Array.isArray(raw.scenes) ? raw.scenes : []).filter((item: Scene) => item && typeof item.id === 'string' && typeof item.theme === 'string' && validDate(item.lastActiveAt)).map((item: Scene) => ({
+      id: item.id,
+      theme: item.theme.slice(0, 24),
+      mood: String(item.mood || ''),
+      keywords: Array.isArray(item.keywords) ? item.keywords.map(String).slice(0, 8) : [],
+      entryIds: Array.isArray(item.entryIds) ? item.entryIds.map(String) : [],
+      lastActiveAt: item.lastActiveAt,
+      createdAt: validDate(item.createdAt) ? item.createdAt : item.lastActiveAt,
+      archived: Boolean(item.archived),
+    })),
+    runs: (Array.isArray(raw.runs) ? raw.runs : []).filter((item: InsightRun) => item && typeof item.day === 'string').map((item: InsightRun) => ({
+      day: item.day,
+      attempts: Number(item.attempts) || 0,
+      accepted: Number(item.accepted) || 0,
+      rejected: Array.isArray(item.rejected) ? item.rejected.map(String).slice(0, 40) : [],
+    })),
   };
   const skipped = raw.entries.length + raw.tasks.length - store.entries.length - store.tasks.length;
   return { store, skipped };
 }
 
-/** 合并两份数据：同 id 保留后出现的那份；记录按 updatedAt 取较新的一条。 */
+/** 画像层是对象，形状不对就整个当没有——半残缺的画像会直接影响洞察质量。 */
+function readProfile(value: unknown): UserProfile | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as UserProfile;
+  if (typeof item.narrative !== 'string' || !item.narrative.trim()) return null;
+  const list = (input: unknown) => (Array.isArray(input) ? input.map(String).filter(Boolean).slice(0, 12) : []);
+  return {
+    version: Number(item.version) || 1,
+    updatedAt: validDate(item.updatedAt) ? item.updatedAt : new Date().toISOString(),
+    narrative: item.narrative.trim().slice(0, 2400),
+    patterns: list(item.patterns),
+    values: list(item.values),
+    tensions: list(item.tensions),
+    currentThemes: list(item.currentThemes),
+    basedOnEntries: Number(item.basedOnEntries) || undefined,
+    sourceDays: typeof item.sourceDays === 'string' ? item.sourceDays : undefined,
+  };
+}
+
+/**
+ * 合并两份数据：同 id 保留后出现的那份；记录按 updatedAt 取较新的一条。
+ * 画像层是整体覆盖（导入的那份更新才换），不能按条目合并——否则两次生成的画像会混成一团。
+ */
 export function mergeStores(current: Store, incoming: Store): Store {
   const byId = <T extends { id: string }>(old: T[], next: T[]) => [...new Map([...old, ...next].map(item => [item.id, item])).values()];
+  const profile = incoming.userProfile && (!current.userProfile || incoming.userProfile.updatedAt > current.userProfile.updatedAt) ? incoming.userProfile : current.userProfile;
   return {
     entries: byId(current.entries, incoming.entries.filter(item => {
       const old = current.entries.find(entry => entry.id === item.id);
@@ -96,8 +155,25 @@ export function mergeStores(current: Store, incoming: Store): Store {
     digests: byId(current.digests, incoming.digests),
     profile: byId(current.profile, incoming.profile),
     threadNotes: byId(current.threadNotes, incoming.threadNotes),
+    insights: byId(current.insights, incoming.insights).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    userProfile: profile,
+    profileVersions: [...new Map([...current.profileVersions, ...incoming.profileVersions].map(item => [item.version, item])).values()].sort((a, b) => a.version - b.version).slice(-12),
+    scenes: byId(current.scenes, incoming.scenes),
+    runs: [...new Map([...current.runs, ...incoming.runs].map(item => [item.day, item])).values()].sort((a, b) => a.day.localeCompare(b.day)).slice(-30),
   };
 }
+
+/* ------------------------------ 旧数据存档 ------------------------------ */
+
+/**
+ * 旧版判断与周沉淀不再出现在界面上，但仍然完整留在设备里。
+ * 这里把它们单独导出一份，用户可以拿去存档，或者在确认不需要之后清除。
+ */
+export function buildArchiveText(judgments: Judgment[], digests: MemoryDigest[]): string {
+  return JSON.stringify({ app: 'qingxing-archive', kind: 'pre-insight-stream', exportedAt: new Date().toISOString(), judgments, digests }, null, 2);
+}
+
+export const archiveFileName = () => `清醒旧数据存档-${today()}.json`;
 
 /** 备份文件的默认名字。 */
 export const backupFileName = () => `qingxing-${today()}.json`;

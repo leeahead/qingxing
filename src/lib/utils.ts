@@ -1,9 +1,9 @@
 // 纯函数工具：日期、id、本地存储键与界面用到的固定文案。
 // 这些函数不依赖 React，也不读写状态，方便单独复用和测试。
 
-import type { ObservationType, Settings } from './types';
+import type { Settings } from './types';
 
-export const VERSION = '5.1.2 · 模型配置不再丢';
+export const VERSION = '6.0 · 洞察流';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -14,10 +14,15 @@ export const keys = {
   digests: 'qingxing.digests.v1',
   profile: 'qingxing.profile.v1',
   threadNotes: 'qingxing.thread-notes.v1',
+  insights: 'qingxing.insights.v1',
+  userProfile: 'qingxing.user-profile.v1',
+  profileVersions: 'qingxing.profile-versions.v1',
+  scenes: 'qingxing.scenes.v1',
+  runs: 'qingxing.insight-runs.v1',
 };
 
-/** 备份文件的 schema 版本；新增数据结构时要一起升级并兼容旧备份。 */
-export const SCHEMA_VERSION = 9;
+/** 备份文件的 schema 版本；新增数据结构时要一起升级并兼容旧备份。v10 = 洞察流（画像层 + 洞察 + 场景）。 */
+export const SCHEMA_VERSION = 10;
 
 export const dayOf = (value: string | Date) => new Date(value).toLocaleDateString('sv-SE');
 export const today = () => dayOf(new Date());
@@ -45,14 +50,14 @@ export function streakOf(counts: Map<string, number>): number {
   return streak;
 }
 
-export const navItems: { id: 'now' | 'review' | 'ask'; label: string; icon: string }[] = [
-  { id: 'now', label: '记录', icon: 'edit' },
-  { id: 'review', label: '回看', icon: 'spark' },
-  { id: 'ask', label: '提问', icon: 'chat' },
+export const navItems: { id: 'insight' | 'memory' | 'settings'; label: string; icon: string }[] = [
+  { id: 'insight', label: '洞察流', icon: 'spark' },
+  { id: 'memory', label: '记忆', icon: 'calendar' },
+  { id: 'settings', label: '偏好与数据', icon: 'settings' },
 ];
 
-const SETTING_TEXT_FIELDS = ['baseUrl', 'apiKey', 'model', 'embedModel'] as const;
-const SETTING_TIME_FIELDS = ['lastAutoObservationAt', 'lastAutoProfileAt', 'lastAutoDigestAt'] as const;
+const SETTING_TEXT_FIELDS = ['baseUrl', 'apiKey', 'model', 'embedModel', 'lastAutoObservationAt', 'lastAutoProfileAt', 'lastAutoDigestAt', 'lastInsightAt', 'lastProfileBuildAt', 'rawReadMonth'] as const;
+const SETTING_NUMBER_FIELDS = ['insightTemperature', 'rawReadCount'] as const;
 
 /**
  * 合并几处模型设置，按传入顺序取优先级：先出现的非空值胜出，后面只补空缺。
@@ -67,18 +72,36 @@ export function mergeSettings(...sources: (Partial<Settings> | undefined | null)
       const value = source[key];
       if (typeof value === 'string' && value.trim() && !merged[key]) merged[key] = value;
     }
-    if (typeof source.autoPilot === 'boolean' && merged.autoPilot === undefined) merged.autoPilot = source.autoPilot;
-    for (const key of SETTING_TIME_FIELDS) {
-      if (source[key] && !merged[key]) merged[key] = source[key];
+    for (const key of SETTING_NUMBER_FIELDS) {
+      const value = source[key];
+      if (typeof value === 'number' && Number.isFinite(value) && merged[key] === undefined) merged[key] = value;
     }
+    if (typeof source.autoPilot === 'boolean' && merged.autoPilot === undefined) merged.autoPilot = source.autoPilot;
+    if (source.harnessLevel && !merged.harnessLevel) merged.harnessLevel = source.harnessLevel;
   }
   return merged;
 }
 
-export const confidenceLabels = { weak: '证据较弱', medium: '证据中等', strong: '证据较强' } as const;
 export const insightKindLabels = { repeat: '反复出现', change: '变化', tension: '矛盾', connection: '与过去相连', detail: '一个细节' } as const;
 export const threadTrendLabels = { up: '最近更频繁', down: '最近变少', flat: '一直没断' } as const;
-export const observationTypeLabels: Record<ObservationType, string> = { pattern: '模式', change: '变化', tension: '矛盾', question: '问题', hypothesis: '假设' };
 export const profileKindLabels = { identity: '我是谁', value: '我在意的事', person: '重要的人', focus: '眼下的焦点' } as const;
 export const judgmentStatusLabels = { candidate: '待核对', confirmed: '已确认', uncertain: '暂不确定', withdrawn: '已撤回' } as const;
-export const correctionReasons = ['不准确', '只发生过一次', '忽略了另一条记录', '当时情境不同', '已经变化了', '以后不再使用'];
+/** 洞察卡片上的置信度标签：只有这两种，不展示证据数量与原文。 */
+export const insightConfidenceLabels = { grounded: '🟢 有依据', speculative: '🟡 有待验证' } as const;
+/** Harness 丢弃原因。只留代号与一句人话，被丢弃的内容本身不进设备存储、也不给用户看。 */
+export const harnessReasonLabels: Record<string, string> = {
+  bad_format: '没按格式回答',
+  empty: '内容是空的',
+  too_short: '短到说明不了任何事',
+  too_long: '超过一句话',
+  has_evidence: '带了引用或证据',
+  self_explaining: '在解释自己怎么想的',
+  parroting: '重复你刚说过的话',
+  report_tone: '语气像在汇报',
+  overclaim: '猜测却用了肯定句',
+  labeling: '在贴标签或下诊断',
+  cliche: '换成谁都成立的话',
+  duplicate: '和之前说过的重了',
+  avoided_direction: '撞到你否定过的方向',
+  daily_limit: '今天先到这里',
+};
