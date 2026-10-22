@@ -113,7 +113,9 @@ export default function Home() {
         // 主存为准；但如果主存是空的而镜像里有内容（旧设备迁移、或主存曾被清空），
         // 以镜像为准，别让已经写下的记忆凭空消失。
         const weight = (state: typeof stored) => state ? state.store.entries.length + state.store.tasks.length + state.store.judgments.length + state.store.summaries.length + state.store.digests.length : 0;
-        const source = weight(stored) > 0 || weight(mirror) === 0 ? stored : mirror;
+        // 镜像里只有模型设置、还没有任何记录时也要用它：先配模型、后写记录是正常顺序。
+        const hasSettings = (state: typeof stored) => Boolean(state?.settings?.baseUrl?.trim() || state?.settings?.model?.trim());
+        const source = weight(stored) > 0 || (weight(mirror) === 0 && !hasSettings(mirror)) ? stored : mirror;
         if (cancelled) return;
         if (!source) { setReady(true); void refreshStorage(); return; }
         // 模型设置可能只存在主存或镜像的一边（某次写入失败、或升级时只搬了一半）。
