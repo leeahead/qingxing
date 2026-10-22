@@ -79,7 +79,7 @@ export function SettingsModal(props: SettingsModalProps) {
     <section className="settings-section">
       <h3>模型连接</h3>
       <p className="muted">不连接模型也能记录与检索。静态网页直接请求接口，需要服务支持浏览器跨域。</p>
-      {!settings.baseUrl.trim() && <div className="recover-row">
+      {!settings.baseUrl.trim() && snapshots.some(item => item.state?.settings?.baseUrl?.trim()) && <div className="recover-row">
         <div>
           <b>这台设备上没找到接口地址</b>
           <p>可能是换版本时丢了。快照里还留着当时的地址与密钥，可以找回来。</p>
