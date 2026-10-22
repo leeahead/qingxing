@@ -292,10 +292,11 @@ export default function Home() {
   async function recoverSettings() {
     const found = await findSettingsInSnapshots();
     if (!found) { setNotice('这些快照里没有可用的模型连接配置。'); return; }
-    const found2 = mergeSettings(found.settings, settings);
-    setSettings(found2);
-    await writeState({ ...currentState(), settings: found2 });
-    writeMirrorState({ ...currentState(), settings: found2 });
+    // 当前已有的值优先，快照只补空缺。
+    const recovered = mergeSettings(settings, found.settings);
+    setSettings(recovered);
+    await writeState({ ...currentState(), settings: recovered });
+    writeMirrorState({ ...currentState(), settings: recovered });
     setNotice(`已从 ${new Date(found.at).toLocaleString('zh-CN')} 的快照找回模型连接配置。`);
   }
   async function restoreDeletedEntry(entry: Entry) {
