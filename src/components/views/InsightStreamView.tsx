@@ -112,7 +112,7 @@ export function InsightStreamView(props: InsightStreamProps) {
       {generating
         ? <p className="loading-note"><i/>正在想下一条……</p>
         : quotaLeft > 0
-          ? <button className="secondary-button" onClick={onGenerate}>再想一条（今天还能出 {quotaLeft} 条）</button>
+          ? <button className="secondary-button" onClick={onGenerate}>{quotaLeft > 1 ? `再想几条（今天还能出 ${quotaLeft} 条）` : '再想一条'}</button>
           : <p className="muted">今天到这里。它说完了，你也可以去记两条。</p>}
       <button className="text-button" onClick={onOpenMemory}>看他原话 · 记忆</button>
     </div>}

@@ -250,38 +250,6 @@ export default function Home() {
     void runPilot();
   }, [ready, modelReady, settings.autoPilot]);
 
-  /**
-   * 一天的量不靠「重开应用」凑够：
-   *   距上一条满 12 分钟，后台再补一轮；从别的 app 切回来且已隔 3 分钟，也补一轮。
-   * 目标条数与尝试预算都用完了就安静下来。
-   */
-  const topUpRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    topUpRef.current = () => {
-      if (!ready || !modelReady || settings.autoPilot === false || !userProfile) return;
-      if (insightBusy || autoBusy || profileBuilding) return;
-      const left = remainingQuota(insights, runs, dailyTargetCount);
-      if (left <= 0) return;
-      void generateInsights(left, userProfile);
-    };
-  });
-  useEffect(() => {
-    if (!ready || !modelReady || settings.autoPilot === false) return;
-    const since = settings.lastInsightAt ? Date.now() - Date.parse(settings.lastInsightAt) : Number.POSITIVE_INFINITY;
-    const timer = setTimeout(() => topUpRef.current(), Math.max(20000, 12 * 60000 - since));
-    return () => clearTimeout(timer);
-  }, [ready, modelReady, settings.autoPilot, settings.lastInsightAt, insights.length, runs.length]);
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      const since = settings.lastInsightAt ? Date.now() - Date.parse(settings.lastInsightAt) : Number.POSITIVE_INFINITY;
-      if (since < 3 * 60000) return;
-      topUpRef.current();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [settings.lastInsightAt]);
-
   // 自动补向量：只在用户填了「向量模型」时进行；失败就安静地退回关键词检索。
   useEffect(() => {
     if (!ready || !settings.embedModel?.trim() || !entries.length) return;

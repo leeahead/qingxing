@@ -3,7 +3,7 @@
 
 import type { Settings } from './types';
 
-export const VERSION = '6.0.1 · 洞察流';
+export const VERSION = '6.0.2 · 洞察流';
 
 export const keys = {
   entries: 'qingxing.entries.v1',

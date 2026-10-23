@@ -130,7 +130,7 @@ export function SettingsModal(props: SettingsModalProps) {
       <div className="filter-row" role="group" aria-label="选择每天条数">
         {TARGETS.map(([value, label, hint]) => <button key={value} className={`filter-chip${target === value ? ' active' : ''}`} title={hint} onClick={() => setSettings(current => ({ ...current, insightDailyTarget: value }))}>{label}</button>)}
       </div>
-      <p className="muted">自检会丢掉大部分候选，所以「目标 5 条」通常要试十几次。没凑够时它会自己接着想：隔十几分钟补一轮，你切回来时也会补。</p>
+      <p className="muted">自检会丢掉大部分候选，所以「目标 5 条」通常要试十几次。想多说就回首页再点一下「再想几条」——它只在你点的时候写；当天的尝试预算用完就安静，第二天重新算。</p>
 
       <div className="section-heading"><h3>自检严格度</h3><span className="muted">Harness</span></div>
       <div className="filter-row" role="group" aria-label="选择自检严格度">
@@ -145,7 +145,7 @@ export function SettingsModal(props: SettingsModalProps) {
       <div className="auto-row">
         <div>
           <b>打开应用时自己来一轮</b>
-          <p>先补一份缺的每日回望，画像到 7 天就更新，然后按你定的条数出洞察。没凑够时不用重开应用：它隔十几分钟自己再想一轮，你从别处切回来时也会补一轮；当天的尝试预算用完就安静。</p>
+          <p>打开应用时先补一份缺的每日回望，画像到 7 天就更新，然后按你定的条数出洞察。之后它不会再自己写：想多说就回首页点「再想几条」，昨天没发够的今天会一起算进来。</p>
           {settings.embedModel?.trim() ? <p>填了向量模型时，也会在后台安静地补齐向量。</p> : null}
         </div>
         <button className={`switch${settings.autoPilot === false ? '' : ' on'}`} role="switch" aria-checked={settings.autoPilot !== false} aria-label="打开时自动整理" onClick={() => setSettings(current => ({ ...current, autoPilot: current.autoPilot === false }))}><i/></button>
