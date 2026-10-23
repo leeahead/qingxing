@@ -48,15 +48,19 @@ export function buildPreferenceBlock(insights: Insight[]): string {
 
 /* ─────────────────────────── 产出节奏 ─────────────────────────── */
 
-/** 一天最多尝试几次生成；Harness 通过率 1/3~1/5，留足重试空间又不烧 token。 */
-export const DAILY_ATTEMPT_LIMIT = 12;
-/** 一次运行最多尝试几条（避免打开应用就长时间占着接口）。 */
-export const RUN_ATTEMPT_LIMIT = 5;
-/** 一天的目标条数：2~4 条，不固定。用日期算出来，同一天内保持稳定。 */
-export function dailyTarget(day: string, carry = 0): number {
+/** 默认每天想留下几条；设置页可以调成 3 / 5 / 8。 */
+export const DEFAULT_DAILY_TARGET = 5;
+export const DAILY_TARGET_CHOICES = [3, 5, 8];
+/** 一次运行最多尝试几条（Harness 通过率大约 1/3，留出重试空间） */
+export const RUN_ATTEMPT_LIMIT = 8;
+/** 一天的尝试预算：按目标条数放大，最多 48 次，避免无限烧 token。 */
+export const attemptBudget = (preferred = DEFAULT_DAILY_TARGET) => Math.min(48, Math.max(12, preferred * 6));
+
+/** 一天的目标条数：以用户选的档为基准，同一天内稳定，偶尔多一条。 */
+export function dailyTarget(day: string, carry = 0, preferred = DEFAULT_DAILY_TARGET): number {
   let hash = 0;
   for (const char of day) hash = (hash * 31 + char.charCodeAt(0)) % 997;
-  return Math.min(5, 2 + (hash % 3) + Math.max(0, carry));
+  return Math.max(1, Math.min(preferred + 3, preferred + (hash % 2) + Math.max(0, carry)));
 }
 
 export const acceptedOn = (insights: Insight[], day: string): number =>
@@ -67,30 +71,33 @@ export const runOf = (runs: InsightRun[], day: string): InsightRun | undefined =
 
 export const attemptsToday = (runs: InsightRun[], day: string): number => runOf(runs, day)?.attempts ?? 0;
 
+/** 今天还剩多少次尝试预算。 */
+export const attemptsLeft = (runs: InsightRun[], day: string = today(), preferred = DEFAULT_DAILY_TARGET): number =>
+  Math.max(0, attemptBudget(preferred) - attemptsToday(runs, day));
+
 /**
  * 昨天没发够，今天补。
  * 只看「昨天有尝试过但没收够」的情况——一整天没打开应用不算欠。
  */
-export function carryOver(insights: Insight[], runs: InsightRun[]): number {
+export function carryOver(insights: Insight[], runs: InsightRun[], preferred = DEFAULT_DAILY_TARGET): number {
   const yesterday = addDays(today(), -1);
   const run = runOf(runs, yesterday);
   if (!run || !run.attempts) return 0;
-  const target = dailyTarget(yesterday);
-  return Math.max(0, Math.min(2, target - acceptedOn(insights, yesterday)));
+  const target = dailyTarget(yesterday, 0, preferred);
+  return Math.max(0, Math.min(3, target - acceptedOn(insights, yesterday)));
 }
 
-/** 今天还该生成几条（已经够了或尝试预算用完就返回 0）。 */
-export function remainingQuota(insights: Insight[], runs: InsightRun[], day = today()): number {
-  const need = dailyTarget(day, carryOver(insights, runs)) - acceptedOn(insights, day);
-  const budgetLeft = DAILY_ATTEMPT_LIMIT - attemptsToday(runs, day);
-  if (budgetLeft <= 0) return 0;
-  return Math.max(0, Math.min(need, budgetLeft));
+/** 今天还该生成几条（已经够了、或者预算用完就返回 0）。 */
+export function remainingQuota(insights: Insight[], runs: InsightRun[], preferred = DEFAULT_DAILY_TARGET, day = today()): number {
+  if (attemptsLeft(runs, day, preferred) <= 0) return 0;
+  const need = dailyTarget(day, carryOver(insights, runs, preferred), preferred) - acceptedOn(insights, day);
+  return Math.max(0, need);
 }
 
-/** 首次进入：24 小时内至少 3 条、至多 5 条。 */
-export function firstRunQuota(insights: Insight[]): number {
+/** 首次进入：24 小时内至少 3 条、至多 5 条（不低于用户选的档）。 */
+export function firstRunQuota(insights: Insight[], preferred = DEFAULT_DAILY_TARGET): number {
   if (insights.length) return 0;
-  return 3;
+  return Math.min(8, Math.max(3, preferred));
 }
 
 /* ─────────────────────────── 自检通过率 ─────────────────────────── */

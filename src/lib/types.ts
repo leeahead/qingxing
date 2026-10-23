@@ -50,6 +50,8 @@ export type Settings = {
   lastProfileBuildAt?: string;
   /** 联想的跳跃程度：0.7 稳妥 / 0.8 平衡 / 0.9 跳跃。错误率偏高就往下调。 */
   insightTemperature?: number;
+  /** 每天想留下几条洞察（3 / 5 / 8） */
+  insightDailyTarget?: number;
   /** Harness 自检严格度；太严会一天出不了几条，太松会全是废话 */
   harnessLevel?: 'strict' | 'balanced' | 'loose';
   /** 追问时读取原文的次数（按月份记，每月不超过 20 次） */

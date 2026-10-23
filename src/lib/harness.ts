@@ -68,14 +68,24 @@ const CLICHE = ['生活总有', '人生难免', '每个人都会', '谁不是这
 const ASSERTIVE = ['就是', '总是', '一定', '肯定', '从不', '永远', '显然', '根本', '注定', '逃不掉', '改不了', '只会'];
 const HEDGE = ['可能', '也许', '像是', '像', '多半', '或许', '会不会', '猜', '看起来', '似乎', '大概', '有点', '感觉'];
 
-/** 两条话是不是在说同一件事。 */
-function overlap(a: string, b: string): number {
+/** 两条话的词重合情况：重合的词太少时，比例再高也不算「同一件事」。 */
+function overlapParts(a: string, b: string): { hit: number; ratio: number } {
   const setA = termsFor(a);
   const setB = new Set(termsFor(b));
-  if (!setA.length || !setB.size) return 0;
+  if (!setA.length || !setB.size) return { hit: 0, ratio: 0 };
   const hit = setA.filter(term => setB.has(term)).length;
-  return hit / Math.min(setA.length, setB.size);
+  return { hit, ratio: hit / Math.min(setA.length, setB.size) };
 }
+
+/**
+ * 是不是在说同一件事。
+ * 只看比例会误伤：一句短洞察往往只有两三个词，撞上一个词就「像 100% 重复」。
+ * 所以要求至少两个共享词，比例才作数。
+ */
+const sameMatter = (a: string, b: string, threshold: number) => {
+  const { hit, ratio } = overlapParts(a, b);
+  return hit >= 2 && ratio >= threshold;
+};
 
 const norm = (value?: string) => (value || '').trim().toLowerCase().slice(0, 12);
 
@@ -103,10 +113,10 @@ export function checkInsight(raw: InsightDraft | null, ctx: HarnessContext): Har
     if (chars < (ctx.level === 'strict' ? 12 : 8)) return { ok: false, reason: 'too_short' };
     // 他刚写完「今天好累」，它又说「你这两天很累」——这是废话，不是洞察。
     const threshold = ctx.level === 'strict' ? 0.55 : 0.7;
-    if (ctx.freshEntries.some(entry => overlap(content, entry.content) >= threshold)) return { ok: false, reason: 'parroting' };
-    const near = ctx.level === 'strict' ? 0.5 : 0.66;
-    if (ctx.existing.some(item => overlap(content, item.content) >= near)) return { ok: false, reason: 'duplicate' };
-  } else if (ctx.existing.some(item => overlap(content, item.content) >= 0.85)) {
+    if (ctx.freshEntries.some(entry => sameMatter(content, entry.content, threshold))) return { ok: false, reason: 'parroting' };
+    const near = ctx.level === 'strict' ? 0.55 : 0.66;
+    if (ctx.existing.some(item => sameMatter(content, item.content, near))) return { ok: false, reason: 'duplicate' };
+  } else if (ctx.existing.some(item => sameMatter(content, item.content, 0.85))) {
     return { ok: false, reason: 'duplicate' };
   }
   return { ok: true, draft: { ...raw, content } };

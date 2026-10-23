@@ -4,12 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { termsFor } from '@/lib/topics';
 import type { DailySummary, Entry, Insight, Message, ProfileItem, ProfileKind, Settings, Store, Task, Theme, UserProfile, View } from '@/lib/types';
 import { VERSION, addDays, dayOf, mergeSettings, navItems, shortDate, streakOf, today, uid } from '@/lib/utils';
-import { buildFollowUpRequest, buildInsightRequest, buildProfileProposalRequest, buildProfileRequest, buildSummaryRequest, buildThreadRequest, callModel, parseInsightCandidate, parseProfileProposal, parseProfileRequest, parseSummary, parseThreadNote } from '@/lib/ai';
+import { buildFollowUpRequest, buildInsightRequest, buildProfileProposalRequest, buildProfileRequest, buildSummaryRequest, buildThreadRequest, callModel, callPlainTextModel, callStructuredModel, parseInsightCandidate, parseProfileProposal, parseProfileRequest, parseSummary, parseThreadNote } from '@/lib/ai';
 import type { ChatTurn, ModelTuning } from '@/lib/ai';
 import { checkInsight } from '@/lib/harness';
 import type { HarnessLevel } from '@/lib/harness';
 import { activeScenes, buildScenes, entriesNeeded, keepProfileVersions, profileDue, profileSourceEntries, MIN_ENTRIES_FOR_INSIGHT } from '@/lib/memory';
-import { applyFeedback, attemptsToday, avoidedDirections, buildPreferenceBlock, firstRunQuota, mergeRun, qualityStats, remainingQuota, DAILY_ATTEMPT_LIMIT, RUN_ATTEMPT_LIMIT } from '@/lib/feedback';
+import { applyFeedback, attemptsLeft, avoidedDirections, buildPreferenceBlock, firstRunQuota, mergeRun, qualityStats, remainingQuota, RUN_ATTEMPT_LIMIT, DEFAULT_DAILY_TARGET } from '@/lib/feedback';
 import { archiveFileName, backupFileName, buildArchiveText, buildBackupText, mergeStores, pickBackupDirectory, saveBackupFile, supportsAutoBackup, writeBackupToDirectory } from '@/lib/backup';
 import type { DirectoryHandleLike } from '@/lib/backup';
 import { appendJournal, clearStorage, clearVectors, createSnapshot, deleteSnapshot, deleteVectors, findSettingsInSnapshots, listJournal, listSnapshots, readBackupMeta, readDirectoryHandle, readMirrorSettings, readMirrorState, readSnapshot, readState, readVectors, rescueSettingsOnce, saveDirectoryHandle, storageStatus, writeBackupMeta, writeMirrorState, writeState, writeVectors } from '@/lib/storage';
@@ -89,6 +89,10 @@ export default function Home() {
   const followEndRef = useRef<HTMLDivElement>(null);
   const { entries, tasks, judgments, summaries, digests, profile, threadNotes, insights, userProfile, scenes, runs } = data;
   const modelReady = Boolean(settings.baseUrl.trim() && settings.model.trim());
+  // ── 洞察流的两个可调档位（设置页里改） ──
+  const harnessLevel = (settings.harnessLevel || 'balanced') as HarnessLevel;
+  /** 每天想留下几条：设置里 3 / 5 / 8，默认 5。尝试预算随它放大。 */
+  const dailyTargetCount = settings.insightDailyTarget ?? DEFAULT_DAILY_TARGET;
 
   /**
    * 所有模型调用都从这里走：把最近一次失败的原因留下来，
@@ -97,6 +101,31 @@ export default function Home() {
   async function askModel(payload: ChatTurn[], timeout = 90000, tuning: ModelTuning = {}): Promise<string> {
     try {
       const answer = await callModel(settings, payload, timeout, tuning);
+      setModelError('');
+      return answer;
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : '未知错误');
+      throw error;
+    }
+  }
+  /**
+   * 要模型回 JSON 的调用都走这里：思考模型常常只把话写在 reasoning_content 里，
+   * 先试着从思考过程中捞答案，捞不到再取消长度上限重要一次，最后才把错误摊给用户。
+   */
+  async function askStructured(payload: ChatTurn[], timeout = 90000, tuning: ModelTuning = {}, jsonFromReasoning = true): Promise<string> {
+    try {
+      const answer = await callStructuredModel(settings, payload, { timeout, temperature: tuning.temperature, maxTokens: tuning.maxTokens, jsonFromReasoning });
+      setModelError('');
+      return answer;
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : '未知错误');
+      throw error;
+    }
+  }
+  /** 自然语言回答（追问面板用）：只回思考过程时会自动再要一次。 */
+  async function askPlain(payload: ChatTurn[], timeout = 60000, tuning: ModelTuning = {}): Promise<string> {
+    try {
+      const answer = await callPlainTextModel(settings, payload, { timeout, temperature: tuning.temperature });
       setModelError('');
       return answer;
     } catch (error) {
@@ -221,6 +250,38 @@ export default function Home() {
     void runPilot();
   }, [ready, modelReady, settings.autoPilot]);
 
+  /**
+   * 一天的量不靠「重开应用」凑够：
+   *   距上一条满 12 分钟，后台再补一轮；从别的 app 切回来且已隔 3 分钟，也补一轮。
+   * 目标条数与尝试预算都用完了就安静下来。
+   */
+  const topUpRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    topUpRef.current = () => {
+      if (!ready || !modelReady || settings.autoPilot === false || !userProfile) return;
+      if (insightBusy || autoBusy || profileBuilding) return;
+      const left = remainingQuota(insights, runs, dailyTargetCount);
+      if (left <= 0) return;
+      void generateInsights(left, userProfile);
+    };
+  });
+  useEffect(() => {
+    if (!ready || !modelReady || settings.autoPilot === false) return;
+    const since = settings.lastInsightAt ? Date.now() - Date.parse(settings.lastInsightAt) : Number.POSITIVE_INFINITY;
+    const timer = setTimeout(() => topUpRef.current(), Math.max(20000, 12 * 60000 - since));
+    return () => clearTimeout(timer);
+  }, [ready, modelReady, settings.autoPilot, settings.lastInsightAt, insights.length, runs.length]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const since = settings.lastInsightAt ? Date.now() - Date.parse(settings.lastInsightAt) : Number.POSITIVE_INFINITY;
+      if (since < 3 * 60000) return;
+      topUpRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [settings.lastInsightAt]);
+
   // 自动补向量：只在用户填了「向量模型」时进行；失败就安静地退回关键词检索。
   useEffect(() => {
     if (!ready || !settings.embedModel?.trim() || !entries.length) return;
@@ -262,7 +323,7 @@ export default function Home() {
     const days = Math.floor((Date.now() - Date.parse(backupMeta.lastExportAt)) / 86400000);
     return Number.isFinite(days) ? days : null;
   }, [backupMeta.lastExportAt]);
-  const quotaLeft = ready && userProfile && modelReady ? remainingQuota(insights, runs) : 0;
+  const quotaLeft = ready && userProfile && modelReady ? remainingQuota(insights, runs, dailyTargetCount) : 0;
   const stats = useMemo(() => qualityStats(insights, runs), [insights, runs]);
   const rawReadsLeft = settings.rawReadMonth === today().slice(0, 7) ? Math.max(0, RAW_READ_MONTHLY_LIMIT - (settings.rawReadCount || 0)) : RAW_READ_MONTHLY_LIMIT;
 
@@ -366,8 +427,6 @@ export default function Home() {
   function setStatus(id: string, status: Task['status']) { setData(current => ({ ...current, tasks: current.tasks.map(item => item.id === id ? { ...item, status } : item) })); }
 
   // ── 洞察：先生成，再检验 ──
-  const harnessLevel = (settings.harnessLevel || 'balanced') as HarnessLevel;
-
   /**
    * 生成 count 条洞察。每一条都要过 Harness；没过就丢掉、再来一条。
    * 用户看不到被丢掉的句子，只在本页留下「今天尝试了几条、留下几条」。
@@ -385,19 +444,19 @@ export default function Home() {
     const avoided = avoidedDirections(insights);
     const preference = buildPreferenceBlock(insights);
     const sceneTop = activeScenes(scenes.length ? scenes : buildScenes(entries, scenes), 3);
-    const budgetUsed = attemptsToday(runs, today());
+    const budgetLeft = attemptsLeft(runs, today(), dailyTargetCount);
+    const rounds = Math.max(0, Math.min(RUN_ATTEMPT_LIMIT, budgetLeft));
     try {
       // 「先生成，再检验」：凑够今天该发的条数，或者用完本轮尝试预算为止。
-      for (let attempt = 0; attempt < RUN_ATTEMPT_LIMIT && accepted < count; attempt++) {
-        if (budgetUsed + attempts >= DAILY_ATTEMPT_LIMIT) { rejects.push('daily_limit'); break; }
+      for (let attempt = 0; attempt < rounds && accepted < count; attempt++) {
         attempts++;
-        const raw = await askModel(buildInsightRequest({
+        const raw = await askStructured(buildInsightRequest({
           profile: profileNow,
           scenes: sceneTop,
           preference,
           said: seen.map(item => item.content),
           background: buildProfileBlock(profile) || undefined,
-        }), 45000, { temperature: settings.insightTemperature ?? 0.8, maxTokens: 100 });
+        }), 60000, { temperature: settings.insightTemperature ?? 0.8, maxTokens: 200 });
         const result = checkInsight(parseInsightCandidate(raw), { level: harnessLevel, existing: seen, freshEntries, avoided });
         if (!result.ok) { rejects.push(result.reason); continue; }
         const insight: Insight = {
@@ -431,7 +490,7 @@ export default function Home() {
     setProfileBuilding(true);
     try {
       const window = profileSourceEntries(entries, settings.lastProfileBuildAt);
-      const raw = await askModel(buildProfileRequest({
+      const raw = await askStructured(buildProfileRequest({
         entries: window.list,
         current: userProfile,
         scenes: activeScenes(scenes, 6),
@@ -473,8 +532,8 @@ export default function Home() {
         const built = await rebuildProfile(manual);
         if (built) { profileNow = built; done.push(`画像第 ${built.version} 版`); }
       }
-      // 3) 洞察：每天 2~4 条，昨天没发够的今天补；第一次开口按「24 小时内 3~5 条」
-      const need = Math.max(remainingQuota(insights, runs), insights.length ? 0 : firstRunQuota(insights), manual ? 1 : 0);
+      // 3) 洞察：按今天的目标条数（设置里 3 / 5 / 8），昨天没发够的今天补；第一次开口至少 3 条
+      const need = Math.max(remainingQuota(insights, runs, dailyTargetCount), insights.length ? 0 : firstRunQuota(insights, dailyTargetCount), manual ? 1 : 0);
       if (profileNow && need > 0) {
         const accepted = await generateInsights(need, profileNow);
         if (accepted) done.push(`${accepted} 条洞察`);
@@ -514,7 +573,7 @@ export default function Home() {
           rawReadCount: (current.rawReadMonth === today().slice(0, 7) ? current.rawReadCount || 0 : 0) + 1,
         }));
       }
-      const answer = await askModel(buildFollowUpRequest({
+      const answer = await askPlain(buildFollowUpRequest({
         insight: followInsight.content,
         profile: userProfile,
         scenes: activeScenes(scenes, 3),

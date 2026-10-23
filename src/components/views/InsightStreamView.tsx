@@ -53,6 +53,20 @@ export function InsightStreamView(props: InsightStreamProps) {
   const newestFirst = [...insights].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const dayCount = new Set(newestFirst.map(item => item.createdAt.slice(0, 10)));
 
+  // 本机数据是异步读出来的。在读出来之前先摆一个和真实内容一样高的骨架，
+  // 否则会出现「先闪一下空状态，再整页跳成卡片」。
+  if (!ready) return <div className="content-column insight-page">
+    <div className="stream-capture">
+      <QuickCapture draft={draft} editing={editing} ready={false} todayCount={todayCount} setDraft={setDraft} setEditing={setEditing} saveEntry={saveEntry} composerRef={composerRef} setTyping={setTyping}/>
+    </div>
+    <div className="insight-skeleton" aria-hidden="true">
+      <span className="sk sk-eyebrow"/>
+      <span className="sk sk-title"/>
+      <span className="sk sk-card"/>
+      <span className="sk sk-card sk-short"/>
+    </div>
+  </div>;
+
   return <div className="content-column insight-page">
     <div className="stream-capture">
       <QuickCapture draft={draft} editing={editing} ready={ready} todayCount={todayCount} setDraft={setDraft} setEditing={setEditing} saveEntry={saveEntry} composerRef={composerRef} setTyping={setTyping}/>
@@ -76,7 +90,7 @@ export function InsightStreamView(props: InsightStreamProps) {
 
     {modelReady && !hasProfile && <div className="empty-state card">
       <p>{entryCount ? '我在把你说的话读成一个人。' : '先记几条，我才有东西可读。'}</p>
-      <p className="muted">{needEntries > 0 ? `再多记 ${needEntries} 条（现在 ${entryCount} 条），我就读一遍，形成一个「我怎么看这个人」的底子，之后每天给你 2 到 4 条洞察。` : `已经够了。让我读一遍这 ${entryCount} 条记录，开始出洞察。`}</p>
+      <p className="muted">{needEntries > 0 ? `再多记 ${needEntries} 条（现在 ${entryCount} 条），我就读一遍，形成一个「我怎么看这个人」的底子，之后按你定的条数每天说几条。` : `已经够了。让我读一遍这 ${entryCount} 条记录，开始出洞察。`}</p>
       <div className="button-row">
         {needEntries === 0 && <button className="primary-button" disabled={generating} onClick={onGenerate}>{generating ? '正在读你的记录……' : '现在就读一遍'}</button>}
       </div>

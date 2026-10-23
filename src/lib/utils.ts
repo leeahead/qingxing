@@ -3,7 +3,7 @@
 
 import type { Settings } from './types';
 
-export const VERSION = '6.0 · 洞察流';
+export const VERSION = '6.0.1 · 洞察流';
 
 export const keys = {
   entries: 'qingxing.entries.v1',
@@ -57,7 +57,7 @@ export const navItems: { id: 'insight' | 'memory' | 'settings'; label: string; i
 ];
 
 const SETTING_TEXT_FIELDS = ['baseUrl', 'apiKey', 'model', 'embedModel', 'lastAutoObservationAt', 'lastAutoProfileAt', 'lastAutoDigestAt', 'lastInsightAt', 'lastProfileBuildAt', 'rawReadMonth'] as const;
-const SETTING_NUMBER_FIELDS = ['insightTemperature', 'rawReadCount'] as const;
+const SETTING_NUMBER_FIELDS = ['insightTemperature', 'insightDailyTarget', 'rawReadCount'] as const;
 
 /**
  * 合并几处模型设置，按传入顺序取优先级：先出现的非空值胜出，后面只补空缺。

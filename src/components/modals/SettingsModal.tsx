@@ -5,6 +5,7 @@ import type { JournalEvent, Snapshot, StorageStatus } from '@/lib/storage';
 import type { EmbeddingProbe } from '@/lib/embedding';
 import type { KeyboardDiag } from '@/lib/keyboard';
 import type { QualityStats } from '@/lib/feedback';
+import { DEFAULT_DAILY_TARGET, attemptBudget } from '@/lib/feedback';
 import { chatEndpoint } from '@/lib/ai';
 import { harnessReasonLabels, VERSION } from '@/lib/utils';
 import { Icon } from '@/components/Icon';
@@ -59,6 +60,11 @@ const TEMPERATURES: [number, string, string][] = [
   [0.8, '平衡', '默认。允许偶尔飘'],
   [0.9, '再跳一点', '更容易说出你没想到的连接'],
 ];
+const TARGETS: [number, string, string][] = [
+  [3, '每天 3 条', '省 token，挑得最严'],
+  [5, '每天 5 条', '默认'],
+  [8, '每天 8 条', '话多一点，自检丢得也多'],
+];
 const LEVELS: ['strict' | 'balanced' | 'loose', string, string][] = [
   ['strict', '严', '一天可能只留 1 条'],
   ['balanced', '适中', '默认。太长、像汇报、空话都丢掉'],
@@ -75,6 +81,7 @@ export function SettingsModal(props: SettingsModalProps) {
     legacyCount, onOpenArchive, keyboardDiag, onClose,
   } = props;
   const temperature = settings.insightTemperature ?? 0.8;
+  const target = settings.insightDailyTarget ?? DEFAULT_DAILY_TARGET;
   const level = settings.harnessLevel ?? 'balanced';
   return <Modal title="偏好与数据" onClose={onClose}>
     <section className="settings-section">
@@ -87,7 +94,7 @@ export function SettingsModal(props: SettingsModalProps) {
 
     <section className="settings-section">
       <h3>洞察流</h3>
-      <p className="muted">它读你的记录，凝成一份「怎么看这个人」的画像，再每天说 2 到 4 条猜测。说的话不带你原文，也不列证据。</p>
+      <p className="muted">它读你的记录，凝成一份「怎么看这个人」的画像，再按你定的条数说猜测。说的话不带你原文，也不列证据。</p>
       <div className="profile-card">
         {profile ? <>
           <div className="profile-head">
@@ -119,6 +126,12 @@ export function SettingsModal(props: SettingsModalProps) {
       </div>
       <p className="muted">觉得它猜得太离谱就往「稳一点」调；觉得它老说安全的话就往「再跳一点」调。</p>
 
+      <div className="section-heading"><h3>每天说几条</h3><span className="muted">目标 {target} 条 · 每天最多尝试 {attemptBudget(target)} 次</span></div>
+      <div className="filter-row" role="group" aria-label="选择每天条数">
+        {TARGETS.map(([value, label, hint]) => <button key={value} className={`filter-chip${target === value ? ' active' : ''}`} title={hint} onClick={() => setSettings(current => ({ ...current, insightDailyTarget: value }))}>{label}</button>)}
+      </div>
+      <p className="muted">自检会丢掉大部分候选，所以「目标 5 条」通常要试十几次。没凑够时它会自己接着想：隔十几分钟补一轮，你切回来时也会补。</p>
+
       <div className="section-heading"><h3>自检严格度</h3><span className="muted">Harness</span></div>
       <div className="filter-row" role="group" aria-label="选择自检严格度">
         {LEVELS.map(([value, label, hint]) => <button key={value} className={`filter-chip${level === value ? ' active' : ''}`} title={hint} onClick={() => setSettings(current => ({ ...current, harnessLevel: value }))}>{label}</button>)}
@@ -132,7 +145,7 @@ export function SettingsModal(props: SettingsModalProps) {
       <div className="auto-row">
         <div>
           <b>打开应用时自己来一轮</b>
-          <p>先补一份缺的每日回望，画像到 7 天就更新，然后按今天的额度出洞察（2 到 4 条，昨天没发够的今天补）。每天最多尝试 12 次，不固定时间。</p>
+          <p>先补一份缺的每日回望，画像到 7 天就更新，然后按你定的条数出洞察。没凑够时不用重开应用：它隔十几分钟自己再想一轮，你从别处切回来时也会补一轮；当天的尝试预算用完就安静。</p>
           {settings.embedModel?.trim() ? <p>填了向量模型时，也会在后台安静地补齐向量。</p> : null}
         </div>
         <button className={`switch${settings.autoPilot === false ? '' : ' on'}`} role="switch" aria-checked={settings.autoPilot !== false} aria-label="打开时自动整理" onClick={() => setSettings(current => ({ ...current, autoPilot: current.autoPilot === false }))}><i/></button>

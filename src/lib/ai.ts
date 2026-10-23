@@ -28,6 +28,19 @@ export function chatEndpoint(settings: Settings): string {
 /** 一次调用的参数。洞察要高温度（鼓励联想），表格化的整理用默认值就够。 */
 export type ModelTuning = { temperature?: number; maxTokens?: number };
 
+/**
+ * 推理模型有时只把话写在 reasoning_content 里，content 是空的。
+ * 把这个情况做成可判断的错误，并把推理原文带出去——洞察这种短 JSON 往往就在里面。
+ */
+export class ReasoningOnlyError extends Error {
+  reasoning: string;
+  constructor(reasoning: string) {
+    super('模型只返回了思考过程，没有给出回答');
+    this.name = 'ReasoningOnlyError';
+    this.reasoning = reasoning;
+  }
+}
+
 /** 调用用户配置的模型；失败时抛出可读的错误，由界面决定怎么提示。 */
 export async function callModel(settings: Settings, payload: ChatTurn[], timeout = 90000, tuning: ModelTuning = {}): Promise<string> {
   let response: Response;
@@ -56,11 +69,70 @@ export async function callModel(settings: Settings, payload: ChatTurn[], timeout
   const result = await response.json();
   const message = result?.choices?.[0]?.message;
   if (typeof message?.content === 'string' && message.content.trim()) return message.content.trim();
-  // 推理模型有时只给 reasoning_content，content 是空的；这时要说清楚，而不是笼统地报“没有返回”。
+  // 推理模型有时只给 reasoning_content，content 是空的；把原文带出去，让调用方决定要不要用它。
   if (typeof message?.reasoning_content === 'string' && message.reasoning_content.trim()) {
-    throw new Error('模型只返回了推理过程，没有给出回答；换一个非推理模型，或在这家服务里关闭思考模式再试');
+    throw new ReasoningOnlyError(message.reasoning_content.trim());
   }
   throw new Error('模型没有返回可读内容');
+}
+
+/** 推理模型常见错误的人话版本。 */
+export const REASONING_HINT = '这个模型带思考模式，只回了思考过程。换一个不带思考的模型（或在这家服务里关掉思考）再试；也可以先记几条，等它闲下来再说。';
+
+export type StructuredCallOptions = ModelTuning & { timeout?: number; /** 允许从思考过程里把 JSON 捞出来当答案 */ jsonFromReasoning?: boolean };
+
+/**
+ * 结构化调用（要模型回 JSON 的那些）。
+ * 推理模型经常因为 max_tokens 太小而只把话写在思考里，所以这里做两层退让：
+ *   1) 先按给定参数试；只回思考过程时，如果里面有完整 JSON，就直接取它；
+ *   2) 没有可取的 JSON，就取消长度上限再要一次；还是只回思考过程，才报错给用户。
+ */
+export async function callStructuredModel(settings: Settings, payload: ChatTurn[], options: StructuredCallOptions = {}): Promise<string> {
+  const { timeout = 90000, jsonFromReasoning = true, ...tuning } = options;
+  const salvage = (error: unknown): string | null => {
+    if (!(error instanceof ReasoningOnlyError) || !jsonFromReasoning) return null;
+    const text = error.reasoning;
+    const start = text.lastIndexOf('{');
+    const end = text.lastIndexOf('}');
+    // 只认「末尾有一个看起来完整的 JSON 对象」，不去猜中间的内容
+    if (start >= 0 && end > start && text.length - start < 4000) return text.slice(start, end + 1);
+    return null;
+  };
+  try {
+    return await callModel(settings, payload, timeout, tuning);
+  } catch (error) {
+    const fromReasoning = salvage(error);
+    if (fromReasoning) return fromReasoning;
+    if (!(error instanceof ReasoningOnlyError)) throw error;
+    if (!tuning.maxTokens) throw new Error(REASONING_HINT);
+  }
+  try {
+    return await callModel(settings, payload, timeout, { temperature: tuning.temperature });
+  } catch (error) {
+    const fromReasoning = salvage(error);
+    if (fromReasoning) return fromReasoning;
+    if (error instanceof ReasoningOnlyError) throw new Error(REASONING_HINT);
+    throw error;
+  }
+}
+
+/** 追问是自然语言回答：只回思考过程时，把「直接说结论」追加进去再要一次。 */
+export async function callPlainTextModel(settings: Settings, payload: ChatTurn[], options: { timeout?: number; temperature?: number } = {}): Promise<string> {
+  const { timeout = 60000, temperature } = options;
+  try {
+    return await callModel(settings, payload, timeout, { temperature });
+  } catch (error) {
+    if (!(error instanceof ReasoningOnlyError)) throw error;
+    const nudged = payload.map((turn, index) => index === payload.length - 1 && turn.role === 'user'
+      ? { ...turn, content: `${turn.content}\n\n（直接给出要说的两三句话，不要写思考过程，不要列点）` }
+      : turn);
+    try {
+      return await callModel(settings, nudged, timeout, { temperature });
+    } catch (retry) {
+      if (retry instanceof ReasoningOnlyError) throw new Error(REASONING_HINT);
+      throw retry;
+    }
+  }
 }
 
 /** 模型偶尔会带上代码块标记，解析前统一去掉。 */

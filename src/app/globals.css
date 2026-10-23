@@ -2129,3 +2129,35 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 
   .quick-capture footer .button-row { flex-wrap: nowrap; justify-content: flex-end; }
 }
+
+/* 首屏骨架：数据读出来之前占住同样的高度，避免整页跳一下 */
+.insight-skeleton {
+  display: grid;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.sk {
+  display: block;
+  border-radius: 14px;
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-raised) 40%, var(--surface) 65%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.5s ease-in-out infinite;
+}
+
+.sk-eyebrow { width: 38%; height: 11px; border-radius: 6px; }
+
+.sk-title { width: 46%; height: 26px; }
+
+.sk-card { height: 138px; border-radius: 20px; }
+
+.sk-short { height: 108px; }
+
+@keyframes sk-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; }
+}
